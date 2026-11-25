@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Многодорожечный редактор музыки и звуковых эффектов">
-<title>MUSICINATE — аудиоредактор</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css"><script src="editor.js" defer></script><script src="sequencer.js" defer></script>
+<title>MUSICINATE — аудиоредактор</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css?v=3"><script src="editor.js?v=3" defer></script><script src="sequencer.js?v=3" defer></script>
 </head>
 <body>
 <header><div class="brand"><img src="icon.png" alt=""><div>MUSICINATE<small>АУДИОРЕДАКТОР</small></div></div><div class="project" id="project">Демо-проект <span> / </span> Ночной сигнал</div><button id="export" class="primary">↓ Экспорт WAV</button></header>
@@ -15,6 +15,7 @@
       <output id="time">00:00.00</output>
       <div class="edit"><button id="split" title="Разделить клип под курсором">✂ <span>Разделить</span></button><button id="remove" title="Удалить выбранный клип">⌫ <span>Удалить</span></button></div>
       <button id="sequencerToggle" aria-controls="sequencer" aria-expanded="false">♫ Секвенсор</button>
+      <button id="magnet" aria-pressed="true" title="Привязка краёв клипов. Удерживайте Shift для свободного перемещения">Привязка</button>
       <label class="zoom">Масштаб <input id="zoom" type="range" min="25" max="140" value="62"></label>
     </div>
     <div class="shortcuts" aria-label="Клипы и автоматизация">
@@ -22,8 +23,8 @@
       <button id="paste"><kbd>V</kbd> Вставить</button>
       <button id="cut"><kbd>X</kbd> Вырезать</button>
       <span class="shortcut-divider"></span>
-      <button id="pointAdd"><kbd>Q</kbd> Точка</button>
-      <button id="pointSmooth"><kbd>Alt</kbd> Плавная точка</button>
+      <button id="pointAdd" title="Также можно дважды щёлкнуть по клипу"><kbd>Q</kbd> Точка</button>
+      <button id="pointSmooth" title="Также можно щёлкнуть по клипу с Alt"><kbd>Alt</kbd> Плавная точка</button>
       <button id="pointRemove"><kbd>A</kbd> Удалить точку</button>
     </div>
     <div class="work">
@@ -50,6 +51,16 @@
           <button id="drumsTab" aria-pressed="true">Биты</button>
           <button id="melodyTab" aria-pressed="false">Мелодия</button>
         </div>
+        <label id="voiceLabel" hidden>Тембр
+          <select id="voice">
+            <option value="synth">Синтезатор</option>
+            <option value="piano">Электропиано</option>
+            <option value="bass">Бас</option>
+            <option value="pluck">Щипковый</option>
+            <option value="organ">Орган</option>
+            <option value="bell">Колокольчик</option>
+          </select>
+        </label>
         <label class="tempo">BPM <input id="tempo" type="number" min="50" max="220" value="120"></label>
       </div>
       <div id="patternScroll"><div id="patternGrid"></div></div>

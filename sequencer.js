@@ -6,7 +6,10 @@
     {name: 'Бочка', voice: 'kick'},
     {name: 'Малый', voice: 'snare'},
     {name: 'Хай-хэт', voice: 'hat'},
-    {name: 'Хлопок', voice: 'clap'}
+    {name: 'Хлопок', voice: 'clap'},
+    {name: 'Том', voice: 'tom'},
+    {name: 'Шейкер', voice: 'shaker'},
+    {name: 'Тарелка', voice: 'cymbal'}
   ];
   const melody = [
     {name: 'До 5', note: 72}, {name: 'Си 4', note: 71}, {name: 'Ля 4', note: 69},
@@ -15,6 +18,14 @@
   ];
   const patterns = {drums, melody};
   for (const row of [...drums, ...melody]) row.cells = Array(steps).fill(false);
+  const melodies = {
+    synth: {gain: .19, decay: 0, attack: .004, harmonics: [[1, 1], [2, .23], [3, .08]]},
+    piano: {gain: .23, decay: 6, attack: .003, harmonics: [[1, 1], [2, .39], [3, .18], [7, .05]]},
+    bass: {gain: .3, decay: 4, attack: .006, harmonics: [[.5, 1], [1, .35], [1.5, .13]]},
+    pluck: {gain: .32, decay: 18, attack: .002, harmonics: [[1, 1], [2, .47], [4, .34], [5, .17]]},
+    organ: {gain: .22, decay: 0, attack: .018, harmonics: [[.5, .28], [1, .73], [2, .46], [3, .22]]},
+    bell: {gain: .26, decay: 9, attack: .002, harmonics: [[1, 1], [2.76, .33], [5.4, .21]]}
+  };
   let mode = 'drums';
   let preview, previewRequest = 0;
 
@@ -29,6 +40,7 @@
   function drawPattern() {
     const grid = $('patternGrid');
     grid.dataset.mode = mode;
+    $('voiceLabel').hidden = mode !== 'melody';
     grid.replaceChildren(make('span'));
     for (let step = 0; step < steps; step++) grid.append(make('span', 'step-number', String(step + 1)));
     for (const row of patterns[mode]) {
@@ -67,6 +79,18 @@
         return (.37 * noise + .13 * Math.sin(2 * Math.PI * 185 * time)) * Math.exp(-time * 23);
       case 'hat':
         return .21 * noise * Math.exp(-time * 55);
+      case 'tom': {
+        const phase = 104 * time + 1.7 * (1 - Math.exp(-time * 18));
+        return .48 * (Math.sin(2 * Math.PI * phase) + .19 * Math.sin(4 * Math.PI * phase)) * Math.exp(-time * 12);
+      }
+      case 'shaker': {
+        const sweep = .23 + .77 * Math.sin(Math.PI * Math.min(1, time / .135)) ** 2;
+        return .32 * noise * sweep * Math.exp(-time * 17);
+      }
+      case 'cymbal': {
+        const carrier = Math.sin(2 * Math.PI * 3209 * time) * Math.sin(2 * Math.PI * 2399 * time);
+        return (.18 * noise + .11 * carrier) * Math.exp(-time * 8);
+      }
       case 'clap': {
         const burst = Math.exp(-time * 48) + (time >= .019 ? Math.exp(-(time - .019) * 34) : 0);
         return .23 * noise * burst;
@@ -78,6 +102,7 @@
     const stepTime = 60 / readTempo() / 4;
     const buffer = context.createBuffer(1, Math.ceil(stepTime * steps * rate), rate);
     const samples = buffer.getChannelData(0);
+    const instrument = melodies[$('voice').value] ?? melodies.synth;
     let seed = 19;
     for (const row of patterns[mode]) {
       row.cells.forEach((enabled, step) => {
@@ -88,11 +113,16 @@
         const frequency = 440 * 2 ** ((row.note - 69) / 12);
         for (let frame = 0; frame < frames; frame++) {
           const time = frame / rate;
-          const edge = Math.min(1, time / .004, (frames - frame) / (rate * .025));
+          const attack = mode === 'melody' ? instrument.attack : .004;
+          const edge = Math.min(1, time / attack, (frames - frame) / (rate * .025));
           let sample;
           if (mode === 'melody') {
             const phase = 2 * Math.PI * frequency * time;
-            sample = .19 * (Math.sin(phase) + .23 * Math.sin(2 * phase) + .08 * Math.sin(3 * phase));
+            let harmonicMix = 0;
+            for (const [ratio, level] of instrument.harmonics) {
+              harmonicMix += level * Math.sin(ratio * phase);
+            }
+            sample = harmonicMix * instrument.gain * Math.exp(-time * instrument.decay);
           } else {
             seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
             sample = drumSample(row.voice, time, seed / 2147483648 - 1);
@@ -136,6 +166,7 @@
     for (const row of patterns[mode]) row.cells.fill(false);
     drawPattern();
   };
+  $('voice').onchange = stopPreview;
   $('tempo').onchange = () => { stopPreview(); readTempo(); };
   $('patternPreview').onclick = async () => {
     if (preview) { stopPreview(); return; }
@@ -162,7 +193,7 @@
   $('patternInsert').onclick = () => {
     stopPreview();
     pause();
-    const name = mode === 'drums' ? 'Бит' : 'Мелодия';
+    const name = mode === 'drums' ? 'Бит' : $('voice').selectedOptions[0]?.textContent || 'Мелодия';
     selected = addTrack(name, renderPattern(), position);
     render();
     $('timeline').focus({preventScroll: true});

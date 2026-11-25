@@ -32,3 +32,9 @@ kbd{font:600 11px ui-monospace,monospace;color:#ded0f4;border:1px solid #4b4261;
 .sequencer-actions{justify-content:flex-end}
 .sequencer-actions #patternClear{margin-right:auto}
 @media(max-width:480px){.shortcut-divider{display:none}.sequencer-head h2{width:100%}.sequencer-actions button{font-size:12px;padding:7px}}
+
+#magnet[aria-pressed=true]{background:#3d2d56;border-color:#715595;color:#f2dcff}
+.snap-guide{position:absolute;top:0;bottom:0;border-left:2px solid #63dec6;z-index:2;pointer-events:none}
+.clip-wrap .point{width:14px;height:14px;touch-action:none;cursor:ns-resize}
+#voiceLabel{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:13px}
+#voiceLabel select{width:auto;max-width:100%}

@@ -5,6 +5,7 @@ const context = new AudioContext({sampleRate: 44100});
 const rate = context.sampleRate;
 const tracks = [];
 const colors = ['#bc96ff', '#63dec6', '#ffb485', '#8aaeff'];
+let magnet = true;
 let selected, activePoint, clipboard, position = 0, pixels = 62, playback;
 const seconds = clip => (clip.end - clip.begin) / clip.buffer.sampleRate;
 const duration = () => Math.max(0, ...tracks.flatMap(track => track.clips.map(clip => clip.at + seconds(clip) + (clip.effect === 'echo' ? .36 : 0))));
@@ -90,8 +91,9 @@ function scheduleEnvelope(param, clip, from, start) {
 }
 
 function cursorFrame() {
-  if (!selected || position < selected.at || position > selected.at + seconds(selected)) return undefined;
-  return Math.min(selected.end, selected.begin + Math.round((position - selected.at) * selected.buffer.sampleRate));
+  if (!selected) return undefined;
+  const frame = selected.begin + Math.round((position - selected.at) * selected.buffer.sampleRate);
+  return frame >= selected.begin && frame <= selected.end ? frame : undefined;
 }
 
 function pointIsVisible(clip, point) {
@@ -109,10 +111,12 @@ function pointToRemove() {
   }, undefined);
 }
 
-function addPoint(smooth) {
+function addPoint(smooth, frame = cursorFrame()) {
   pause();
-  const frame = cursorFrame();
-  if (frame === undefined) return;
+  if (frame === undefined) {
+    say('Поставьте курсор внутри выбранного клипа');
+    return;
+  }
   activePoint = selected.points.find(point => point.frame === frame);
   if (activePoint) activePoint.smooth = smooth;
   else {
@@ -121,6 +125,7 @@ function addPoint(smooth) {
     selected.points.sort((left, right) => left.frame - right.frame);
   }
   render();
+  $('timeline').focus({preventScroll: true});
   say(smooth ? 'Плавная точка добавлена' : 'Точка громкости добавлена');
 }
 
@@ -154,35 +159,70 @@ function showPointSelection() {
     ?.querySelector('[data-frame="' + activePoint?.frame + '"]')?.setAttribute('aria-pressed', 'true');
 }
 
+const pointOffset = level => 3 + (1 - level) * 36;
+
+function paintEnvelope(canvas, clip) {
+  const paint = canvas.getContext('2d');
+  paint.clearRect(0, 0, canvas.width, canvas.height);
+  paint.strokeStyle = '#f0deff';
+  paint.beginPath();
+  for (let x = 0; x <= canvas.width; x++) {
+    const frame = clip.begin + (clip.end - clip.begin) * x / canvas.width;
+    paint.lineTo(x, pointOffset(envelopeValue(clip.points, frame)));
+  }
+  paint.stroke();
+}
+
+function updateMarker(marker, clip, point) {
+  marker.style.top = 24 + pointOffset(point.level) + 'px';
+  marker.title = (point.smooth ? 'Плавная точка' : 'Точка') + ' · ' + Math.round(point.level * 100) + '%';
+  marker.setAttribute('aria-label', marker.title + ' · ' + format(clip.at + (point.frame - clip.begin) / clip.buffer.sampleRate));
+  marker.classList.toggle('smooth', point.smooth);
+}
+
 function drawEnvelope(wrapper, clip, width) {
   if (!clip.points.length) return;
   const canvas = make('canvas', 'envelope');
   canvas.width = Math.max(1, Math.min(1800, Math.ceil(width)));
   canvas.height = 42;
-  const paint = canvas.getContext('2d');
-  const offset = value => 3 + (1 - value) * 36;
-  paint.strokeStyle = '#f0deff';
-  paint.beginPath();
-  for (let x = 0; x <= canvas.width; x++) {
-    const frame = clip.begin + (clip.end - clip.begin) * x / canvas.width;
-    paint.lineTo(x, offset(envelopeValue(clip.points, frame)));
-  }
-  paint.stroke();
+  paintEnvelope(canvas, clip);
   const points = make('div', 'points');
   for (const point of clip.points) {
     if (!pointIsVisible(clip, point)) continue;
     const marker = make('button', point.smooth ? 'point smooth' : 'point');
     marker.dataset.frame = point.frame;
     marker.style.left = (point.frame - clip.begin) / (clip.end - clip.begin) * 100 + '%';
-    marker.style.top = 24 + offset(point.level) + 'px';
-    marker.title = (point.smooth ? 'Плавная точка' : 'Точка') + ' · ' + Math.round(point.level * 100) + '%';
-    marker.setAttribute('aria-label', marker.title + ' · ' + format(clip.at + (point.frame - clip.begin) / clip.buffer.sampleRate));
+    updateMarker(marker, clip, point);
     marker.setAttribute('aria-pressed', point === activePoint && clip === selected);
-    marker.onclick = () => {
+    const activate = () => {
+      pause();
       selectClip(clip, wrapper.firstElementChild);
       activePoint = point;
       showPointSelection();
       seek(clip.at + (point.frame - clip.begin) / clip.buffer.sampleRate, true);
+    };
+    marker.onclick = activate;
+    marker.onpointerdown = event => {
+      if (event.button !== 0) return;
+      const initialY = event.clientY;
+      const initialLevel = point.level;
+      activate();
+      marker.setPointerCapture(event.pointerId);
+      const updateLevel = level => {
+        point.level = level;
+        paintEnvelope(canvas, clip);
+        updateMarker(marker, clip, point);
+        $('pointLevel').value = Math.round(level * 100);
+      };
+      marker.onpointermove = move => {
+        const delta = initialY - move.clientY;
+        if (delta) updateLevel(Math.max(0, Math.min(1, initialLevel + delta / 36)));
+      };
+      marker.onpointerup = () => { marker.onpointermove = null; };
+      marker.onpointercancel = () => {
+        marker.onpointermove = null;
+        updateLevel(initialLevel);
+      };
     };
     points.append(marker);
   }
@@ -195,18 +235,45 @@ $('paste').onclick = pasteClip;
 $('pointAdd').onclick = () => addPoint(false);
 $('pointSmooth').onclick = () => addPoint(true);
 $('pointRemove').onclick = removePoint;
+function refreshPoint() {
+  const wrapper = $('grid').querySelector('.selected')?.parentElement;
+  const canvas = wrapper?.querySelector('.envelope');
+  const marker = wrapper?.querySelector('[data-frame="' + activePoint.frame + '"]');
+  if (canvas && marker) {
+    paintEnvelope(canvas, selected);
+    updateMarker(marker, selected, activePoint);
+  }
+}
+
+$('pointLevel').oninput = () => {
+  if (!activePoint) return;
+  const level = $('pointLevel').valueAsNumber;
+  if (!Number.isFinite(level) || level < 0 || level > 100) return;
+  pause();
+  activePoint.level = level / 100;
+  refreshPoint();
+};
 $('pointLevel').onchange = () => {
   if (!activePoint) return;
-  pause();
   const level = $('pointLevel').valueAsNumber;
-  if (Number.isFinite(level)) activePoint.level = Math.max(0, Math.min(100, level)) / 100;
-  render();
+  if (Number.isFinite(level)) {
+    pause();
+    activePoint.level = Math.max(0, Math.min(100, level)) / 100;
+  }
+  refreshPoint();
+  showPointSelection();
+};
+$('pointLevel').onkeydown = event => {
+  if (event.key === 'Enter') {
+    $('pointLevel').onchange();
+    $('timeline').focus({preventScroll: true});
+  }
 };
 $('pointMode').onchange = () => {
   if (!activePoint) return;
   pause();
   activePoint.smooth = $('pointMode').value === 'smooth';
-  render();
+  refreshPoint();
 };
 
 function demo() {
@@ -366,11 +433,36 @@ function make(tag, klass, label) {
   return node;
 }
 
+function snapPosition(clip, proposed, anchors, enabled) {
+  const result = {at: Math.max(0, proposed)};
+  if (!enabled) return result;
+  const length = seconds(clip);
+  let closest = 10 / pixels;
+  for (const edge of anchors) {
+    for (const offset of [0, length]) {
+      const aligned = edge - offset;
+      const distance = Math.abs(aligned - result.at);
+      if (aligned < 0 || distance >= closest) continue;
+      closest = distance;
+      result.edge = edge;
+      result.aligned = aligned;
+    }
+  }
+  return result.edge === undefined ? result : {at: result.aligned, edge: result.edge};
+}
+
+$('magnet').onclick = () => {
+  magnet = !magnet;
+  $('magnet').setAttribute('aria-pressed', magnet);
+};
+
 function render() {
   const grid = $('grid');
   grid.replaceChildren();
   grid.style.setProperty('--step', pixels + 'px');
-  const span = Math.max(12, Math.ceil(duration()) + 2);
+  const span = Math.max(12, Math.ceil(Math.max(duration(), position)) + 2);
+  const guide = make('div', 'snap-guide');
+  guide.hidden = true;
   const ruler = make('div', 'row ruler');
   ruler.append(make('div', 'track-head', 'ДОРОЖКИ'));
   const scale = make('div', 'lane');
@@ -404,17 +496,30 @@ function render() {
       const canvas = make('canvas');
       button.append(make('span', '', clip.name), canvas);
       waveform(canvas, clip, width);
+      const timeAt = event => {
+        const fraction = (event.clientX - wrapper.getBoundingClientRect().left) / width;
+        return clip.at + Math.max(0, Math.min(1, fraction)) * seconds(clip);
+      };
       button.onclick = event => {
         selectClip(clip, button);
-        if (event.detail) {
-          const offset = (event.clientX - wrapper.getBoundingClientRect().left) / pixels;
-          seek(clip.at + Math.max(0, Math.min(seconds(clip), offset)));
+        if (!event.detail) return;
+        if (event.altKey) pause();
+        seek(timeAt(event));
+        if (event.altKey) {
+          waitingForAlt = false;
+          addPoint(true);
         }
       };
+      button.ondblclick = event => {
+        if (!event.altKey) addPoint(false);
+      };
       button.onpointerdown = event => {
-        if (event.button !== 0) return;
+        if (event.button !== 0 || event.altKey) return;
         const x = event.clientX;
         const original = clip.at;
+        const anchors = [0, ...tracks.flatMap(track => track.clips
+          .filter(other => other !== clip)
+          .flatMap(other => [other.at, other.at + seconds(other)]))];
         let moved = false;
         button.setPointerCapture(event.pointerId);
         button.onpointermove = move => {
@@ -422,7 +527,10 @@ function render() {
           if (Math.abs(delta) < 4 && !moved) return;
           if (!moved) pause();
           moved = true;
-          clip.at = Math.max(0, original + delta / pixels);
+          const snapped = snapPosition(clip, original + delta / pixels, anchors, magnet && !move.shiftKey);
+          clip.at = snapped.at;
+          guide.hidden = snapped.edge === undefined;
+          if (!guide.hidden) guide.style.left = (head.offsetWidth + snapped.edge * pixels) + 'px';
           wrapper.style.left = clip.at * pixels + 'px';
         };
         button.onpointerup = () => {
@@ -438,7 +546,7 @@ function render() {
     row.append(head, lane);
     grid.append(row);
   }
-  grid.append(make('div', 'cursor'));
+  grid.append(guide, make('div', 'cursor'));
   inspector();
   updateCursor();
 }
