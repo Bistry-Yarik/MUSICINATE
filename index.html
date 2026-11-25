@@ -4,15 +4,23 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Многодорожечный редактор музыки и звуковых эффектов">
 <!-- FluidR3 GM samples by Frank Wen. See SAMPLE-LICENSE.md for attribution and licenses. -->
-<title>MUSICINATE — аудиоредактор</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css?v=6"><script src="editor.js?v=5" defer></script><script src="samples.js?v=1" defer></script><script src="drum-samples.js?v=1" defer></script><script src="sequencer.js?v=8" defer></script>
+<title>MUSICINATE</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css?v=7"><script src="editor.js?v=5" defer></script><script src="samples.js?v=1" defer></script><script src="drum-samples.js?v=1" defer></script><script src="sequencer.js?v=8" defer></script>
 </head>
 <body>
-<header><div class="brand"><img src="icon.png" alt=""><div>MUSICINATE<small>АУДИОРЕДАКТОР</small></div></div><div class="project" id="project">Демо-проект <span> / </span> Ночной сигнал</div><button id="export" class="primary">↓ Экспорт WAV</button></header>
+<header>
+  <div class="brand"><img src="icon.png" alt=""><h1>MUSICINATE</h1></div>
+  <div class="project" id="project">Демо · Ночной сигнал</div>
+  <div class="session">
+    <button id="new">Новый проект</button>
+    <button id="import">＋ Импорт аудио</button>
+    <button id="export" class="primary">↓ Экспорт WAV</button>
+  </div>
+  <input id="files" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a" multiple hidden>
+</header>
 <main>
-  <section class="intro"><div><div class="eyebrow">РАБОЧАЯ СТАНЦИЯ</div><h1>Студия звука</h1></div><div class="session"><button id="new">Новый проект</button><button id="import">＋ Импорт аудио</button></div><input id="files" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a" multiple hidden></section>
   <section class="studio" aria-label="Монтаж">
     <div class="transport">
-      <div class="controls"><button id="home" title="В начало" aria-label="В начало">⏮</button><button id="play" class="play" aria-label="Воспроизвести">▶</button><button id="stop" title="Остановить" aria-label="Остановить">■</button></div>
+      <div class="controls"><button id="home" title="В начало" aria-label="В начало">⏮</button><button id="play" class="play" aria-label="Воспроизвести" title="Воспроизведение / пауза · Пробел">▶</button><button id="stop" title="Остановить" aria-label="Остановить">■</button></div>
       <output id="time">00:00.00</output>
       <div class="edit"><button id="split" title="Разделить клип под курсором">✂ <span>Разделить</span></button><button id="remove" title="Удалить выбранный клип">⌫ <span>Удалить</span></button></div>
       <button id="sequencerToggle" aria-controls="sequencer" aria-expanded="false">♫ Секвенсор</button>
@@ -32,7 +40,7 @@
     <div class="work">
       <div class="arrangement"><div id="timeline" tabindex="0" aria-label="Временная шкала"><div id="grid"></div></div>
       <div class="drop" id="drop"><span>＋</span> Перетащите аудиофайлы сюда или <button id="browse">выберите файлы</button></div></div>
-      <aside><p class="eyebrow">ИНСПЕКТОР</p><h2 id="clipName">Клип</h2><p id="clipMeta"></p>
+      <aside><h2 id="clipName">Клип</h2><p id="clipMeta"></p>
       <div id="settings">
       <label>Громкость <output id="gainValue"></output><input id="gain" type="range" min="0" max="150"></label>
       <fieldset id="automationSettings" hidden>
@@ -47,9 +55,8 @@
       <label id="fadeLabel">Плавное затухание <output id="fadeValue"></output><input id="fade" type="range" min="0" max="3" step="0.1"></label>
       </div></aside>
     </div>
-    <section id="sequencer" aria-labelledby="sequencerTitle" hidden>
+    <section id="sequencer" aria-label="Секвенсор" hidden>
       <div class="sequencer-head">
-        <h2 id="sequencerTitle">Секвенсор</h2>
         <div class="pattern-controls" role="group" aria-label="Тип партии">
           <button id="drumsTab" aria-pressed="true">Биты</button>
           <button id="melodyTab" aria-pressed="false">Мелодия</button>
@@ -84,7 +91,7 @@
         <button id="patternInsert" class="primary">＋ Добавить на шкалу</button>
       </div>
     </section>
-    <footer><span id="status" role="status">Готово к работе</span><span>Пробел — воспроизведение / пауза</span></footer>
+    <footer><span id="status" role="status"></span></footer>
   </section>
 </main>
 </body></html>
