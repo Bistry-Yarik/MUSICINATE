@@ -7,7 +7,19 @@ const tracks = [];
 const colors = ['#bc96ff', '#63dec6', '#ffb485', '#8aaeff'];
 let magnet = true;
 let selected, activePoint, clipboard, position = 0, pixels = 62, playback;
-const seconds = clip => (clip.end - clip.begin) / clip.buffer.sampleRate;
+const playbackRate = clip => 2 ** ((clip.pitch ?? 0) / 12);
+const framesPerSecond = clip => clip.buffer.sampleRate * playbackRate(clip);
+const seconds = clip => (clip.end - clip.begin) / framesPerSecond(clip);
+const automation = {
+  points: {name: 'Громкость', min: 0, max: 100, initial: 1},
+  panPoints: {name: 'Панорама', min: -100, max: 100, initial: .5},
+  filterPoints: {name: 'Фильтр', min: 0, max: 100, initial: 1}
+};
+let pointParameter = 'points';
+const toDisplay = (level, parameter = pointParameter) => {
+  const {min, max} = automation[parameter];
+  return Math.round(min + level * (max - min));
+};
 const duration = () => Math.max(0, ...tracks.flatMap(track => track.clips.map(clip => clip.at + seconds(clip) + (clip.effect === 'echo' ? .36 : 0))));
 const say = message => { $('status').textContent = message; };
 const format = value => {
@@ -24,13 +36,15 @@ function createTrack(name) {
 
 function addTrack(name, buffer, at = 0) {
   const track = createTrack(name);
-  const clip = {name, buffer, at, begin: 0, end: buffer.length, gain: 1, pan: 0, fade: 0, effect: 'none', points: [], track};
+  const clip = {name, buffer, at, begin: 0, end: buffer.length, gain: 1, pan: 0, pitch: 0, fade: 0, effect: 'none', points: [], panPoints: [], filterPoints: [], track};
   track.clips.push(clip);
   return clip;
 }
 
 function cloneClip(clip) {
-  return {...clip, points: clip.points.map(point => ({...point}))};
+  const copy = {...clip};
+  for (const key of Object.keys(automation)) copy[key] = clip[key].map(point => ({...point}));
+  return copy;
 }
 
 function copyClip(cut) {
@@ -55,8 +69,8 @@ function pasteClip() {
   say('Клип вставлен в позицию ' + format(position));
 }
 
-function envelopeValue(points, frame) {
-  if (!points.length) return 1;
+function envelopeValue(points, frame, initial = 1) {
+  if (!points.length) return initial;
   const index = points.findIndex(point => point.frame >= frame);
   if (index === -1) return points.at(-1).level;
   if (index === 0) return points[0].level;
@@ -67,18 +81,20 @@ function envelopeValue(points, frame) {
   return left.level + (right.level - left.level) * fraction;
 }
 
-function scheduleEnvelope(param, clip, from, start) {
-  const {points, end} = clip;
+function scheduleEnvelope(param, clip, from, start, parameter = 'points', convert = level => level) {
+  const points = clip[parameter];
+  const {end} = clip;
   if (!points.length) return;
-  const sampleRate = clip.buffer.sampleRate;
-  param.setValueAtTime(envelopeValue(points, from), start);
-  const rampTo = frame => param.linearRampToValueAtTime(envelopeValue(points, frame), start + (frame - from) / sampleRate);
+  const sampleRate = framesPerSecond(clip);
+  const valueAt = frame => convert(envelopeValue(points, frame));
+  param.setValueAtTime(valueAt(from), start);
+  const rampTo = frame => param.linearRampToValueAtTime(valueAt(frame), start + (frame - from) / sampleRate);
   for (let index = 0; index < points.length; index++) {
     const point = points[index];
     if (point.frame <= from) continue;
     const previous = points[index - 1];
     // Use fixed subdivisions so seeking and trimming use the same curve.
-    if (point.smooth && previous) {
+    if ((point.smooth || parameter === 'filterPoints') && previous) {
       for (let step = 1; step < 32; step++) {
         const frame = previous.frame + (point.frame - previous.frame) * step / 32;
         if (frame > from && frame < end) rampTo(frame);
@@ -92,7 +108,7 @@ function scheduleEnvelope(param, clip, from, start) {
 
 function cursorFrame() {
   if (!selected) return undefined;
-  const frame = selected.begin + Math.round((position - selected.at) * selected.buffer.sampleRate);
+  const frame = selected.begin + Math.round((position - selected.at) * framesPerSecond(selected));
   return frame >= selected.begin && frame <= selected.end ? frame : undefined;
 }
 
@@ -104,7 +120,7 @@ function pointToRemove() {
   if (selected && pointIsVisible(selected, activePoint)) return activePoint;
   const frame = cursorFrame();
   if (frame === undefined) return undefined;
-  const visible = selected.points.filter(point => pointIsVisible(selected, point));
+  const visible = selected[pointParameter].filter(point => pointIsVisible(selected, point));
   return visible.reduce((nearest, point) => {
     if (!nearest || Math.abs(point.frame - frame) < Math.abs(nearest.frame - frame)) return point;
     return nearest;
@@ -117,26 +133,26 @@ function addPoint(smooth, frame = cursorFrame()) {
     say('Поставьте курсор внутри выбранного клипа');
     return;
   }
-  activePoint = selected.points.find(point => point.frame === frame);
+  activePoint = selected[pointParameter].find(point => point.frame === frame);
   if (activePoint) activePoint.smooth = smooth;
   else {
-    activePoint = {frame, level: envelopeValue(selected.points, frame), smooth};
-    selected.points.push(activePoint);
-    selected.points.sort((left, right) => left.frame - right.frame);
+    activePoint = {frame, level: envelopeValue(selected[pointParameter], frame, automation[pointParameter].initial), smooth};
+    selected[pointParameter].push(activePoint);
+    selected[pointParameter].sort((left, right) => left.frame - right.frame);
   }
   render();
   $('timeline').focus({preventScroll: true});
-  say(smooth ? 'Плавная точка добавлена' : 'Точка громкости добавлена');
+  say(automation[pointParameter].name + (smooth ? ' · плавная точка' : ' · точка добавлена'));
 }
 
 function removePoint() {
   const point = pointToRemove();
   if (!point) return;
   pause();
-  selected.points.splice(selected.points.indexOf(point), 1);
+  selected[pointParameter].splice(selected[pointParameter].indexOf(point), 1);
   activePoint = undefined;
   render();
-  say('Точка громкости удалена');
+  say('Точка удалена');
 }
 
 function selectClip(clip, button) {
@@ -151,7 +167,7 @@ function selectClip(clip, button) {
 function showPointSelection() {
   $('automationSettings').hidden = !activePoint;
   if (activePoint) {
-    $('pointLevel').value = Math.round(activePoint.level * 100);
+    $('pointLevel').value = toDisplay(activePoint.level);
     $('pointMode').value = activePoint.smooth ? 'smooth' : 'linear';
   }
   $('grid').querySelectorAll('.point[aria-pressed=true]').forEach(button => button.setAttribute('aria-pressed', 'false'));
@@ -168,26 +184,26 @@ function paintEnvelope(canvas, clip) {
   paint.beginPath();
   for (let x = 0; x <= canvas.width; x++) {
     const frame = clip.begin + (clip.end - clip.begin) * x / canvas.width;
-    paint.lineTo(x, pointOffset(envelopeValue(clip.points, frame)));
+    paint.lineTo(x, pointOffset(envelopeValue(clip[pointParameter], frame)));
   }
   paint.stroke();
 }
 
 function updateMarker(marker, clip, point) {
   marker.style.top = 24 + pointOffset(point.level) + 'px';
-  marker.title = (point.smooth ? 'Плавная точка' : 'Точка') + ' · ' + Math.round(point.level * 100) + '%';
-  marker.setAttribute('aria-label', marker.title + ' · ' + format(clip.at + (point.frame - clip.begin) / clip.buffer.sampleRate));
+  marker.title = (point.smooth ? 'Плавная точка' : 'Точка') + ' · ' + toDisplay(point.level) + '%';
+  marker.setAttribute('aria-label', marker.title + ' · ' + format(clip.at + (point.frame - clip.begin) / framesPerSecond(clip)));
   marker.classList.toggle('smooth', point.smooth);
 }
 
 function drawEnvelope(wrapper, clip, width) {
-  if (!clip.points.length) return;
+  if (!clip[pointParameter].length) return;
   const canvas = make('canvas', 'envelope');
   canvas.width = Math.max(1, Math.min(1800, Math.ceil(width)));
   canvas.height = 42;
   paintEnvelope(canvas, clip);
   const points = make('div', 'points');
-  for (const point of clip.points) {
+  for (const point of clip[pointParameter]) {
     if (!pointIsVisible(clip, point)) continue;
     const marker = make('button', point.smooth ? 'point smooth' : 'point');
     marker.dataset.frame = point.frame;
@@ -199,7 +215,7 @@ function drawEnvelope(wrapper, clip, width) {
       selectClip(clip, wrapper.firstElementChild);
       activePoint = point;
       showPointSelection();
-      seek(clip.at + (point.frame - clip.begin) / clip.buffer.sampleRate, true);
+      seek(clip.at + (point.frame - clip.begin) / framesPerSecond(clip), true);
     };
     marker.onclick = activate;
     marker.onpointerdown = event => {
@@ -212,7 +228,7 @@ function drawEnvelope(wrapper, clip, width) {
         point.level = level;
         paintEnvelope(canvas, clip);
         updateMarker(marker, clip, point);
-        $('pointLevel').value = Math.round(level * 100);
+        $('pointLevel').value = toDisplay(level);
       };
       marker.onpointermove = move => {
         const delta = initialY - move.clientY;
@@ -248,9 +264,10 @@ function refreshPoint() {
 $('pointLevel').oninput = () => {
   if (!activePoint) return;
   const level = $('pointLevel').valueAsNumber;
-  if (!Number.isFinite(level) || level < 0 || level > 100) return;
+  const {min, max} = automation[pointParameter];
+  if (!Number.isFinite(level) || level < min || level > max) return;
   pause();
-  activePoint.level = level / 100;
+  activePoint.level = (level - min) / (max - min);
   refreshPoint();
 };
 $('pointLevel').onchange = () => {
@@ -258,7 +275,8 @@ $('pointLevel').onchange = () => {
   const level = $('pointLevel').valueAsNumber;
   if (Number.isFinite(level)) {
     pause();
-    activePoint.level = Math.max(0, Math.min(100, level)) / 100;
+    const {min, max} = automation[pointParameter];
+    activePoint.level = (Math.max(min, Math.min(max, level)) - min) / (max - min);
   }
   refreshPoint();
   showPointSelection();
@@ -274,6 +292,23 @@ $('pointMode').onchange = () => {
   pause();
   activePoint.smooth = $('pointMode').value === 'smooth';
   refreshPoint();
+};
+
+$('pointParameter').onchange = () => {
+  pointParameter = $('pointParameter').value;
+  activePoint = undefined;
+  const {min, max, name} = automation[pointParameter];
+  $('pointLevel').min = min;
+  $('pointLevel').max = max;
+  $('pointLegend').textContent = 'Точка · ' + name.toLowerCase();
+  render();
+};
+
+$('pitch').onchange = () => {
+  pause();
+  const value = $('pitch').valueAsNumber;
+  if (Number.isFinite(value)) selected.pitch = Math.max(-48, Math.min(48, value));
+  render();
 };
 
 function demo() {
@@ -317,6 +352,7 @@ function schedule(audio, output, from, when) {
       const start = when + Math.max(0, clip.at - from);
       const source = audio.createBufferSource();
       source.buffer = clip.buffer;
+      source.playbackRate.value = playbackRate(clip);
       const gain = audio.createGain();
       const pan = audio.createStereoPanner();
       pan.pan.value = clip.pan;
@@ -329,8 +365,18 @@ function schedule(audio, output, from, when) {
         gain.gain.linearRampToValueAtTime(0, start + length - elapsed);
       }
       const envelope = audio.createGain();
-      scheduleEnvelope(envelope.gain, clip, clip.begin + elapsed * clip.buffer.sampleRate, start);
-      source.connect(gain).connect(envelope).connect(pan);
+      const fromFrame = clip.begin + elapsed * framesPerSecond(clip);
+      scheduleEnvelope(envelope.gain, clip, fromFrame, start);
+      scheduleEnvelope(pan.pan, clip, fromFrame, start, 'panPoints', level => Math.max(-1, Math.min(1, clip.pan + level * 2 - 1)));
+      source.connect(gain).connect(envelope);
+      if (clip.filterPoints.length) {
+        const tone = audio.createBiquadFilter();
+        const ceiling = Math.min(20000, audio.sampleRate * .48);
+        scheduleEnvelope(tone.frequency, clip, fromFrame, start, 'filterPoints', level => 60 * (ceiling / 60) ** level);
+        envelope.connect(tone).connect(pan);
+      } else {
+        envelope.connect(pan);
+      }
       if (clip.effect === 'lowpass') {
         const filter = audio.createBiquadFilter();
         filter.frequency.value = 700;
@@ -347,7 +393,7 @@ function schedule(audio, output, from, when) {
           }
         }
       }
-      source.start(start, clip.begin / clip.buffer.sampleRate + elapsed, length - elapsed);
+      source.start(start, fromFrame / clip.buffer.sampleRate, (clip.end - fromFrame) / clip.buffer.sampleRate);
       sources.push(source);
     }
   }
@@ -562,6 +608,7 @@ function inspector() {
   if (!selected) return;
   $('gain').value = selected.gain * 100;
   $('gainValue').textContent = Math.round(selected.gain * 100) + '%';
+  $('pitch').value = selected.pitch;
   $('pan').value = selected.pan * 100;
   $('panValue').textContent = Math.round(selected.pan * 100);
   $('fade').value = selected.fade;
@@ -598,9 +645,9 @@ for (const id of ['in', 'out']) {
 $('split').onclick = () => {
   pause();
   const clip = selected;
-  const frame = clip.begin + Math.round((position - clip.at) * clip.buffer.sampleRate);
+  const frame = clip.begin + Math.round((position - clip.at) * framesPerSecond(clip));
   if (frame <= clip.begin || frame >= clip.end) return;
-  const right = {...cloneClip(clip), begin: frame, at: clip.at + (frame - clip.begin) / clip.buffer.sampleRate};
+  const right = {...cloneClip(clip), begin: frame, at: clip.at + (frame - clip.begin) / framesPerSecond(clip)};
   clip.end = frame;
   clip.fade = 0;
   clip.track.clips.splice(clip.track.clips.indexOf(clip) + 1, 0, right);
