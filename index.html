@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Многодорожечный редактор музыки и звуковых эффектов">
-<title>MUSICINATE — аудиоредактор</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css"><script src="editor.js" defer></script>
+<title>MUSICINATE — аудиоредактор</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css"><script src="editor.js" defer></script><script src="sequencer.js" defer></script>
 </head>
 <body>
 <header><div class="brand"><img src="icon.png" alt=""><div>MUSICINATE<small>АУДИОРЕДАКТОР</small></div></div><div class="project" id="project">Демо-проект <span> / </span> Ночной сигнал</div><button id="export" class="primary">↓ Экспорт WAV</button></header>
@@ -14,7 +14,17 @@
       <div class="controls"><button id="home" title="В начало" aria-label="В начало">⏮</button><button id="play" class="play" aria-label="Воспроизвести">▶</button><button id="stop" title="Остановить" aria-label="Остановить">■</button></div>
       <output id="time">00:00.00</output>
       <div class="edit"><button id="split" title="Разделить клип под курсором">✂ <span>Разделить</span></button><button id="remove" title="Удалить выбранный клип">⌫ <span>Удалить</span></button></div>
+      <button id="sequencerToggle" aria-controls="sequencer" aria-expanded="false">♫ Секвенсор</button>
       <label class="zoom">Масштаб <input id="zoom" type="range" min="25" max="140" value="62"></label>
+    </div>
+    <div class="shortcuts" aria-label="Клипы и автоматизация">
+      <button id="copy"><kbd>C</kbd> Копировать</button>
+      <button id="paste"><kbd>V</kbd> Вставить</button>
+      <button id="cut"><kbd>X</kbd> Вырезать</button>
+      <span class="shortcut-divider"></span>
+      <button id="pointAdd"><kbd>Q</kbd> Точка</button>
+      <button id="pointSmooth"><kbd>Alt</kbd> Плавная точка</button>
+      <button id="pointRemove"><kbd>A</kbd> Удалить точку</button>
     </div>
     <div class="work">
       <div class="arrangement"><div id="timeline" tabindex="0" aria-label="Временная шкала"><div id="grid"></div></div>
@@ -22,12 +32,33 @@
       <aside><p class="eyebrow">ИНСПЕКТОР</p><h2 id="clipName">Клип</h2><p id="clipMeta"></p>
       <div id="settings">
       <label>Громкость <output id="gainValue"></output><input id="gain" type="range" min="0" max="150"></label>
+      <fieldset id="automationSettings" hidden>
+        <legend>Точка громкости</legend>
+        <label>Уровень, % <input id="pointLevel" type="number" min="0" max="100" step="1"></label>
+        <label>Переход к точке <select id="pointMode"><option value="linear">Линейный</option><option value="smooth">Плавный</option></select></label>
+      </fieldset>
       <label>Панорама <output id="panValue"></output><input id="pan" type="range" min="-100" max="100"></label>
       <fieldset><legend>Обрезка, сек.</legend><label>Начало <input id="in" type="number" min="0" step="0.01"></label><label>Конец <input id="out" type="number" min="0" step="0.01"></label></fieldset>
       <label>Эффект <select id="effect"><option value="none">Без эффекта</option><option value="echo">Эхо</option><option value="lowpass">Приглушение</option></select></label>
       <label id="fadeLabel">Плавное затухание <output id="fadeValue"></output><input id="fade" type="range" min="0" max="3" step="0.1"></label>
       </div></aside>
     </div>
+    <section id="sequencer" aria-labelledby="sequencerTitle" hidden>
+      <div class="sequencer-head">
+        <h2 id="sequencerTitle">Секвенсор</h2>
+        <div class="pattern-controls" role="group" aria-label="Тип партии">
+          <button id="drumsTab" aria-pressed="true">Биты</button>
+          <button id="melodyTab" aria-pressed="false">Мелодия</button>
+        </div>
+        <label class="tempo">BPM <input id="tempo" type="number" min="50" max="220" value="120"></label>
+      </div>
+      <div id="patternScroll"><div id="patternGrid"></div></div>
+      <div class="sequencer-actions">
+        <button id="patternClear">Очистить</button>
+        <button id="patternPreview">▶ Прослушать</button>
+        <button id="patternInsert" class="primary">＋ Добавить на шкалу</button>
+      </div>
+    </section>
     <footer><span id="status" role="status">Готово к работе</span><span>Пробел — воспроизведение / пауза</span></footer>
   </section>
 </main>

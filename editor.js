@@ -5,7 +5,7 @@ const context = new AudioContext({sampleRate: 44100});
 const rate = context.sampleRate;
 const tracks = [];
 const colors = ['#bc96ff', '#63dec6', '#ffb485', '#8aaeff'];
-let selected, position = 0, pixels = 62, playback;
+let selected, activePoint, clipboard, position = 0, pixels = 62, playback;
 const seconds = clip => (clip.end - clip.begin) / clip.buffer.sampleRate;
 const duration = () => Math.max(0, ...tracks.flatMap(track => track.clips.map(clip => clip.at + seconds(clip) + (clip.effect === 'echo' ? .36 : 0))));
 const say = message => { $('status').textContent = message; };
@@ -15,13 +15,199 @@ const format = value => {
   return pad(Math.floor(centis / 6000)) + ':' + pad(Math.floor(centis / 100) % 60) + '.' + pad(centis % 100);
 };
 
-function addTrack(name, buffer, at = 0) {
+function createTrack(name) {
   const track = {name, color: colors[tracks.length % colors.length], mute: false, clips: []};
-  const clip = {name, buffer, at, begin: 0, end: buffer.length, gain: 1, pan: 0, fade: 0, effect: 'none', track};
-  track.clips.push(clip);
   tracks.push(track);
+  return track;
+}
+
+function addTrack(name, buffer, at = 0) {
+  const track = createTrack(name);
+  const clip = {name, buffer, at, begin: 0, end: buffer.length, gain: 1, pan: 0, fade: 0, effect: 'none', points: [], track};
+  track.clips.push(clip);
   return clip;
 }
+
+function cloneClip(clip) {
+  return {...clip, points: clip.points.map(point => ({...point}))};
+}
+
+function copyClip(cut) {
+  if (!selected) return;
+  clipboard = cloneClip(selected);
+  if (cut) removeClip();
+  else inspector();
+  say(cut ? 'Клип вырезан' : 'Клип скопирован');
+}
+
+function pasteClip() {
+  if (!clipboard) return;
+  pause();
+  let track = selected?.track ?? clipboard.track;
+  const end = position + seconds(clipboard);
+  if (!tracks.includes(track) || track.clips.some(clip => clip.at < end && clip.at + seconds(clip) > position)) {
+    track = createTrack(clipboard.name);
+  }
+  selected = {...cloneClip(clipboard), at: position, track};
+  track.clips.push(selected);
+  render();
+  say('Клип вставлен в позицию ' + format(position));
+}
+
+function envelopeValue(points, frame) {
+  if (!points.length) return 1;
+  const index = points.findIndex(point => point.frame >= frame);
+  if (index === -1) return points.at(-1).level;
+  if (index === 0) return points[0].level;
+  const right = points[index];
+  const left = points[index - 1];
+  let fraction = (frame - left.frame) / (right.frame - left.frame);
+  if (right.smooth) fraction = fraction * fraction * (3 - 2 * fraction);
+  return left.level + (right.level - left.level) * fraction;
+}
+
+function scheduleEnvelope(param, clip, from, start) {
+  const {points, end} = clip;
+  if (!points.length) return;
+  const sampleRate = clip.buffer.sampleRate;
+  param.setValueAtTime(envelopeValue(points, from), start);
+  const rampTo = frame => param.linearRampToValueAtTime(envelopeValue(points, frame), start + (frame - from) / sampleRate);
+  for (let index = 0; index < points.length; index++) {
+    const point = points[index];
+    if (point.frame <= from) continue;
+    const previous = points[index - 1];
+    // Use fixed subdivisions so seeking and trimming use the same curve.
+    if (point.smooth && previous) {
+      for (let step = 1; step < 32; step++) {
+        const frame = previous.frame + (point.frame - previous.frame) * step / 32;
+        if (frame > from && frame < end) rampTo(frame);
+      }
+    }
+    if (point.frame >= end) break;
+    rampTo(point.frame);
+  }
+  rampTo(end);
+}
+
+function cursorFrame() {
+  if (!selected || position < selected.at || position > selected.at + seconds(selected)) return undefined;
+  return Math.min(selected.end, selected.begin + Math.round((position - selected.at) * selected.buffer.sampleRate));
+}
+
+function pointIsVisible(clip, point) {
+  return !!point && point.frame >= clip.begin && point.frame <= clip.end;
+}
+
+function pointToRemove() {
+  if (selected && pointIsVisible(selected, activePoint)) return activePoint;
+  const frame = cursorFrame();
+  if (frame === undefined) return undefined;
+  const visible = selected.points.filter(point => pointIsVisible(selected, point));
+  return visible.reduce((nearest, point) => {
+    if (!nearest || Math.abs(point.frame - frame) < Math.abs(nearest.frame - frame)) return point;
+    return nearest;
+  }, undefined);
+}
+
+function addPoint(smooth) {
+  pause();
+  const frame = cursorFrame();
+  if (frame === undefined) return;
+  activePoint = selected.points.find(point => point.frame === frame);
+  if (activePoint) activePoint.smooth = smooth;
+  else {
+    activePoint = {frame, level: envelopeValue(selected.points, frame), smooth};
+    selected.points.push(activePoint);
+    selected.points.sort((left, right) => left.frame - right.frame);
+  }
+  render();
+  say(smooth ? 'Плавная точка добавлена' : 'Точка громкости добавлена');
+}
+
+function removePoint() {
+  const point = pointToRemove();
+  if (!point) return;
+  pause();
+  selected.points.splice(selected.points.indexOf(point), 1);
+  activePoint = undefined;
+  render();
+  say('Точка громкости удалена');
+}
+
+function selectClip(clip, button) {
+  if (selected !== clip) activePoint = undefined;
+  selected = clip;
+  $('grid').querySelector('.selected')?.classList.remove('selected');
+  button.classList.add('selected');
+  inspector();
+  updateCursor();
+}
+
+function showPointSelection() {
+  $('automationSettings').hidden = !activePoint;
+  if (activePoint) {
+    $('pointLevel').value = Math.round(activePoint.level * 100);
+    $('pointMode').value = activePoint.smooth ? 'smooth' : 'linear';
+  }
+  $('grid').querySelectorAll('.point[aria-pressed=true]').forEach(button => button.setAttribute('aria-pressed', 'false'));
+  $('grid').querySelector('.selected + .envelope + .points')
+    ?.querySelector('[data-frame="' + activePoint?.frame + '"]')?.setAttribute('aria-pressed', 'true');
+}
+
+function drawEnvelope(wrapper, clip, width) {
+  if (!clip.points.length) return;
+  const canvas = make('canvas', 'envelope');
+  canvas.width = Math.max(1, Math.min(1800, Math.ceil(width)));
+  canvas.height = 42;
+  const paint = canvas.getContext('2d');
+  const offset = value => 3 + (1 - value) * 36;
+  paint.strokeStyle = '#f0deff';
+  paint.beginPath();
+  for (let x = 0; x <= canvas.width; x++) {
+    const frame = clip.begin + (clip.end - clip.begin) * x / canvas.width;
+    paint.lineTo(x, offset(envelopeValue(clip.points, frame)));
+  }
+  paint.stroke();
+  const points = make('div', 'points');
+  for (const point of clip.points) {
+    if (!pointIsVisible(clip, point)) continue;
+    const marker = make('button', point.smooth ? 'point smooth' : 'point');
+    marker.dataset.frame = point.frame;
+    marker.style.left = (point.frame - clip.begin) / (clip.end - clip.begin) * 100 + '%';
+    marker.style.top = 24 + offset(point.level) + 'px';
+    marker.title = (point.smooth ? 'Плавная точка' : 'Точка') + ' · ' + Math.round(point.level * 100) + '%';
+    marker.setAttribute('aria-label', marker.title + ' · ' + format(clip.at + (point.frame - clip.begin) / clip.buffer.sampleRate));
+    marker.setAttribute('aria-pressed', point === activePoint && clip === selected);
+    marker.onclick = () => {
+      selectClip(clip, wrapper.firstElementChild);
+      activePoint = point;
+      showPointSelection();
+      seek(clip.at + (point.frame - clip.begin) / clip.buffer.sampleRate, true);
+    };
+    points.append(marker);
+  }
+  wrapper.append(canvas, points);
+}
+
+$('copy').onclick = () => copyClip(false);
+$('cut').onclick = () => copyClip(true);
+$('paste').onclick = pasteClip;
+$('pointAdd').onclick = () => addPoint(false);
+$('pointSmooth').onclick = () => addPoint(true);
+$('pointRemove').onclick = removePoint;
+$('pointLevel').onchange = () => {
+  if (!activePoint) return;
+  pause();
+  const level = $('pointLevel').valueAsNumber;
+  if (Number.isFinite(level)) activePoint.level = Math.max(0, Math.min(100, level)) / 100;
+  render();
+};
+$('pointMode').onchange = () => {
+  if (!activePoint) return;
+  pause();
+  activePoint.smooth = $('pointMode').value === 'smooth';
+  render();
+};
 
 function demo() {
   let seed = 4;
@@ -75,7 +261,9 @@ function schedule(audio, output, from, when) {
         if (elapsed < fadeStart) gain.gain.setValueAtTime(clip.gain, start + fadeStart - elapsed);
         gain.gain.linearRampToValueAtTime(0, start + length - elapsed);
       }
-      source.connect(gain).connect(pan);
+      const envelope = audio.createGain();
+      scheduleEnvelope(envelope.gain, clip, clip.begin + elapsed * clip.buffer.sampleRate, start);
+      source.connect(gain).connect(envelope).connect(pan);
       if (clip.effect === 'lowpass') {
         const filter = audio.createBiquadFilter();
         filter.frequency.value = 700;
@@ -109,6 +297,7 @@ function pause() {
 }
 
 async function toggle() {
+  document.dispatchEvent(new Event('stop-pattern-preview'));
   if (playback) { pause(); return; }
   if (!tracks.length) return;
   try {
@@ -131,10 +320,11 @@ function tick() {
   requestAnimationFrame(tick);
 }
 
-function seek(value) {
+function seek(value, keepPoint = false) {
   const wasPlaying = !!playback;
   pause();
-  position = Math.min(duration(), Math.max(0, value));
+  position = Math.max(0, value);
+  if (!keepPoint && activePoint) { activePoint = undefined; showPointSelection(); }
   updateCursor();
   if (wasPlaying) toggle();
 }
@@ -146,6 +336,8 @@ function updateCursor() {
   $('play').textContent = playback ? 'Ⅱ' : '▶';
   $('play').setAttribute('aria-label', playback ? 'Пауза' : 'Воспроизвести');
   $('split').disabled = !selected || position <= selected.at || position >= selected.at + seconds(selected);
+  $('pointAdd').disabled = $('pointSmooth').disabled = cursorFrame() === undefined;
+  $('pointRemove').disabled = !pointToRemove();
 }
 
 function waveform(canvas, clip, width) {
@@ -205,18 +397,19 @@ function render() {
       const button = make('button', 'clip' + (clip === selected ? ' selected' : ''));
       button.title = 'Выбрать или перетащить ' + clip.name;
       button.style.setProperty('--color', track.color);
-      button.style.left = clip.at * pixels + 'px';
+      const wrapper = make('div', 'clip-wrap');
+      wrapper.style.left = clip.at * pixels + 'px';
       const width = Math.max(3, seconds(clip) * pixels);
-      button.style.width = width + 'px';
+      wrapper.style.width = width + 'px';
       const canvas = make('canvas');
       button.append(make('span', '', clip.name), canvas);
       waveform(canvas, clip, width);
-      button.onclick = () => {
-        selected = clip;
-        grid.querySelector('.selected')?.classList.remove('selected');
-        button.classList.add('selected');
-        inspector();
-        updateCursor();
+      button.onclick = event => {
+        selectClip(clip, button);
+        if (event.detail) {
+          const offset = (event.clientX - wrapper.getBoundingClientRect().left) / pixels;
+          seek(clip.at + Math.max(0, Math.min(seconds(clip), offset)));
+        }
       };
       button.onpointerdown = event => {
         if (event.button !== 0) return;
@@ -230,15 +423,17 @@ function render() {
           if (!moved) pause();
           moved = true;
           clip.at = Math.max(0, original + delta / pixels);
-          button.style.left = clip.at * pixels + 'px';
+          wrapper.style.left = clip.at * pixels + 'px';
         };
         button.onpointerup = () => {
           button.onpointermove = null;
-          if (moved) { selected = clip; render(); }
+          if (moved) { selected = clip; activePoint = undefined; render(); }
         };
         button.onpointercancel = () => { clip.at = original; render(); };
       };
-      lane.append(button);
+      wrapper.append(button);
+      drawEnvelope(wrapper, clip, width);
+      lane.append(wrapper);
     }
     row.append(head, lane);
     grid.append(row);
@@ -250,7 +445,10 @@ function render() {
 
 function inspector() {
   $('settings').hidden = !selected;
-  $('remove').disabled = !selected;
+  $('remove').disabled = $('copy').disabled = $('cut').disabled = !selected;
+  $('paste').disabled = !clipboard;
+  if (!selected?.points.includes(activePoint) || !pointIsVisible(selected, activePoint)) activePoint = undefined;
+  showPointSelection();
   $('clipName').textContent = selected?.name ?? 'Выберите клип';
   $('clipMeta').textContent = selected ? format(selected.at) + '  ·  ' + seconds(selected).toFixed(2) + ' сек.' : '';
   if (!selected) return;
@@ -294,27 +492,30 @@ $('split').onclick = () => {
   const clip = selected;
   const frame = clip.begin + Math.round((position - clip.at) * clip.buffer.sampleRate);
   if (frame <= clip.begin || frame >= clip.end) return;
-  const right = {...clip, begin: frame, at: clip.at + (frame - clip.begin) / clip.buffer.sampleRate};
+  const right = {...cloneClip(clip), begin: frame, at: clip.at + (frame - clip.begin) / clip.buffer.sampleRate};
   clip.end = frame;
   clip.fade = 0;
   clip.track.clips.splice(clip.track.clips.indexOf(clip) + 1, 0, right);
   selected = right;
   render();
 };
-$('remove').onclick = () => {
+function removeClip() {
+  if (!selected) return;
   pause();
   const track = selected.track;
   track.clips.splice(track.clips.indexOf(selected), 1);
   if (!track.clips.length) tracks.splice(tracks.indexOf(track), 1);
-  selected = tracks.flatMap(item => item.clips)[0];
-  position = Math.min(position, duration());
+  selected = track.clips[0] ?? tracks.flatMap(item => item.clips)[0];
+  activePoint = undefined;
   render();
-};
+}
+$('remove').onclick = removeClip;
 
 let importing = 0;
 $('new').onclick = () => {
   if (tracks.length && !confirm('Создать пустой проект? Текущий монтаж будет сброшен.')) return;
   pause();
+  document.dispatchEvent(new Event('stop-pattern-preview'));
   tracks.length = 0;
   selected = undefined;
   position = 0;
@@ -357,12 +558,54 @@ $('drop').ondrop = event => {
 $('zoom').oninput = event => { pixels = Number(event.target.value); render(); };
 $('play').onclick = toggle;
 $('home').onclick = () => seek(0);
-$('stop').onclick = () => { pause(); seek(0); };
+$('stop').onclick = () => {
+  document.dispatchEvent(new Event('stop-pattern-preview'));
+  pause();
+  seek(0);
+};
+const shortcuts = {
+  KeyC: () => copyClip(false),
+  KeyV: pasteClip,
+  KeyX: () => copyClip(true),
+  KeyQ: () => addPoint(false),
+  KeyA: removePoint
+};
+
+let waitingForAlt = false;
 document.addEventListener('keydown', event => {
-  if (event.code !== 'Space' || event.repeat || event.target.closest('input,button,select,textarea')) return;
-  event.preventDefault();
-  toggle();
+  const editingText = event.target.closest('input,select,textarea,[contenteditable]');
+  if (event.code === 'AltLeft' || event.code === 'AltRight') {
+    if (!event.repeat && !editingText && !event.ctrlKey && !event.metaKey && !event.shiftKey && cursorFrame() !== undefined) {
+      waitingForAlt = true;
+      event.preventDefault();
+    }
+    return;
+  }
+  waitingForAlt = false;
+  if (event.repeat || editingText || event.altKey || event.shiftKey) return;
+  if (event.code === 'Space' && !event.ctrlKey && !event.metaKey && !event.target.closest('button')) {
+    event.preventDefault();
+    toggle();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && !['KeyC', 'KeyV', 'KeyX'].includes(event.code)) return;
+  if ((event.ctrlKey || event.metaKey) && window.getSelection()?.toString()) return;
+  const action = shortcuts[event.code];
+  if (action) {
+    event.preventDefault();
+    action();
+  }
 });
+
+document.addEventListener('keyup', event => {
+  if (event.code !== 'AltLeft' && event.code !== 'AltRight') return;
+  if (!waitingForAlt) return;
+  waitingForAlt = false;
+  event.preventDefault();
+  addPoint(true);
+});
+
+window.addEventListener('blur', () => { waitingForAlt = false; });
 
 function wav(buffer) {
   const left = buffer.getChannelData(0);
