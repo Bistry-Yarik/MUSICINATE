@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Многодорожечный редактор музыки и звуковых эффектов">
-<title>MUSICINATE — аудиоредактор</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css?v=5"><script src="editor.js?v=5" defer></script><script src="sequencer.js?v=4" defer></script>
+<title>MUSICINATE — аудиоредактор</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css?v=5"><script src="editor.js?v=5" defer></script><script src="sequencer.js?v=6" defer></script>
 </head>
 <body>
 <header><div class="brand"><img src="icon.png" alt=""><div>MUSICINATE<small>АУДИОРЕДАКТОР</small></div></div><div class="project" id="project">Демо-проект <span> / </span> Ночной сигнал</div><button id="export" class="primary">↓ Экспорт WAV</button></header>
@@ -63,7 +63,7 @@
             <option value="bell">Колокольчик</option>
           </select>
         </label>
-        <label class="tempo">BPM <input id="tempo" type="number" min="50" max="220" value="120"></label>
+        <label class="tempo">BPM <input id="tempo" type="number" min="1" max="220" value="120"></label>
       </div>
       <div class="pattern-navigation">
         <button id="priorSteps" aria-label="Предыдущие 16 шагов">‹</button>

@@ -21,9 +21,11 @@
   const frequency = note => 440 * 2 ** ((note - 69) / 12);
 
   function stepSeconds() {
-    const bpm = clamp(Math.round($('tempo').valueAsNumber || 120), 50, 220);
-    $('tempo').value = bpm;
-    return 60 / bpm / 4;
+    const input = $('tempo');
+    const bpm = Number.isFinite(input.valueAsNumber) ? Math.round(input.valueAsNumber) : Number(input.defaultValue);
+    const tempo = clamp(bpm, Number(input.min), Number(input.max));
+    input.value = tempo;
+    return 60 / tempo / 4;
   }
 
   function makeSampler(event, instrument) {
