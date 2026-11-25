@@ -47,3 +47,8 @@ kbd{font:600 11px ui-monospace,monospace;color:#ded0f4;border:1px solid #4b4261;
 #patternGrid .step-pad.chosen{outline:2px solid #fff;outline-offset:-3px}
 #patternGrid .step-pad.sustained{background:color-mix(in srgb,#63dec6 25%,#262436)}
 #pitch{margin-top:5px}
+
+.track-head,.clip{user-select:none}
+.clip-wrap.dragging{z-index:2}
+.clip-wrap.dragging .clip{cursor:grabbing}
+.lane.drop-target{box-shadow:inset 0 0 0 2px #63dec6;background-color:#63dec61a}

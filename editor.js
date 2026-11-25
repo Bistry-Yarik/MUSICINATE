@@ -502,6 +502,16 @@ $('magnet').onclick = () => {
   $('magnet').setAttribute('aria-pressed', magnet);
 };
 
+function moveClip(clip, track, at) {
+  if (track !== clip.track) {
+    const source = clip.track;
+    source.clips.splice(source.clips.indexOf(clip), 1);
+    track.clips.push(clip);
+    clip.track = track;
+  }
+  clip.at = at;
+}
+
 function render() {
   const grid = $('grid');
   grid.replaceChildren();
@@ -522,6 +532,7 @@ function render() {
   }
   ruler.append(scale);
   grid.append(ruler);
+  const trackLanes = [];
   for (const track of tracks) {
     const row = make('div', 'row');
     const head = make('div', 'track-head');
@@ -530,10 +541,12 @@ function render() {
     mute.onclick = () => { pause(); track.mute = !track.mute; render(); };
     head.append(make('strong', '', track.name), make('small', '', track.clips.length + ' клип(а)'), mute);
     const lane = make('div', 'lane');
+    const sourceLane = {track, lane};
+    trackLanes.push(sourceLane);
     lane.onclick = event => { if (event.target === lane) seek((event.clientX - lane.getBoundingClientRect().left) / pixels); };
     for (const clip of track.clips) {
       const button = make('button', 'clip' + (clip === selected ? ' selected' : ''));
-      button.title = 'Выбрать или перетащить ' + clip.name;
+      button.title = 'Перетащить по времени или на другую дорожку · ' + clip.name;
       button.style.setProperty('--color', track.color);
       const wrapper = make('div', 'clip-wrap');
       wrapper.style.left = clip.at * pixels + 'px';
@@ -560,30 +573,64 @@ function render() {
         if (!event.altKey) addPoint(false);
       };
       button.onpointerdown = event => {
-        if (event.button !== 0 || event.altKey) return;
-        const x = event.clientX;
+        if (event.button !== 0 || event.altKey || event.isPrimary === false) return;
+        const {clientX: x, clientY: y, pointerId} = event;
+        const timeline = $('timeline');
+        const scrollLeft = timeline.scrollLeft;
+        const grabY = y - lane.getBoundingClientRect().top;
         const original = clip.at;
         const anchors = [0, ...tracks.flatMap(track => track.clips
           .filter(other => other !== clip)
           .flatMap(other => [other.at, other.at + seconds(other)]))];
         let moved = false;
-        button.setPointerCapture(event.pointerId);
+        let target = sourceLane;
+        let nextTime = original;
+        button.setPointerCapture(pointerId);
         button.onpointermove = move => {
-          const delta = move.clientX - x;
-          if (Math.abs(delta) < 4 && !moved) return;
-          if (!moved) pause();
-          moved = true;
-          const snapped = snapPosition(clip, original + delta / pixels, anchors, magnet && !move.shiftKey);
-          clip.at = snapped.at;
+          if (move.pointerId !== pointerId) return;
+          const dx = move.clientX - x + timeline.scrollLeft - scrollLeft;
+          const dy = move.clientY - y;
+          if (!moved && Math.hypot(dx, dy) < 4) return;
+          if (!moved) {
+            pause();
+            wrapper.classList.add('dragging');
+            moved = true;
+          }
+          const sourceTop = lane.getBoundingClientRect().top;
+          const laneHeight = lane.getBoundingClientRect().height;
+          const centerY = move.clientY - grabY + laneHeight / 2;
+          const viewport = timeline.getBoundingClientRect();
+          const destination = centerY >= viewport.top && centerY < viewport.bottom
+            ? trackLanes.find(entry => {
+              const bounds = entry.lane.getBoundingClientRect();
+              return centerY >= bounds.top && centerY < bounds.bottom;
+            }) : undefined;
+          const nextLane = destination ?? sourceLane;
+          if (nextLane !== target) target.lane.classList.remove('drop-target');
+          target = nextLane;
+          target.lane.classList.toggle('drop-target', target !== sourceLane);
+          wrapper.style.transform = 'translateY(' + (target.lane.getBoundingClientRect().top - sourceTop) + 'px)';
+          const snapped = Math.abs(dx) < 4 ? {at: original}
+            : snapPosition(clip, original + dx / pixels, anchors, magnet && !move.shiftKey);
+          nextTime = snapped.at;
           guide.hidden = snapped.edge === undefined;
           if (!guide.hidden) guide.style.left = (head.offsetWidth + snapped.edge * pixels) + 'px';
-          wrapper.style.left = clip.at * pixels + 'px';
+          wrapper.style.left = nextTime * pixels + 'px';
         };
-        button.onpointerup = () => {
+        button.onpointerup = release => {
+          if (release.pointerId !== pointerId) return;
           button.onpointermove = null;
-          if (moved) { selected = clip; activePoint = undefined; render(); }
+          if (!moved) return;
+          const changedTrack = target.track !== clip.track;
+          moveClip(clip, target.track, nextTime);
+          selected = clip;
+          activePoint = undefined;
+          render();
+          if (changedTrack) say('Клип перенесён на дорожку «' + target.track.name + '»');
         };
-        button.onpointercancel = () => { clip.at = original; render(); };
+        button.onpointercancel = cancel => {
+          if (cancel.pointerId === pointerId) render();
+        };
       };
       wrapper.append(button);
       drawEnvelope(wrapper, clip, width);
@@ -601,7 +648,7 @@ function inspector() {
   $('settings').hidden = !selected;
   $('remove').disabled = $('copy').disabled = $('cut').disabled = !selected;
   $('paste').disabled = !clipboard;
-  if (!selected?.points.includes(activePoint) || !pointIsVisible(selected, activePoint)) activePoint = undefined;
+  if (!selected?.[pointParameter].includes(activePoint) || !pointIsVisible(selected, activePoint)) activePoint = undefined;
   showPointSelection();
   $('clipName').textContent = selected?.name ?? 'Выберите клип';
   $('clipMeta').textContent = selected ? format(selected.at) + '  ·  ' + seconds(selected).toFixed(2) + ' сек.' : '';
