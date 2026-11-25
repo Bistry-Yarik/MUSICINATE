@@ -18,7 +18,68 @@
   const cellKey = (row, step) => row + ':' + step;
   const noteName = note => pitches[((note % 12) + 12) % 12] + ' ' + (Math.floor(note / 12) - 1);
   const sine = phase => Math.sin(2 * Math.PI * phase);
-  const frequency = note => 440 * 2 ** ((note - 69) / 12);
+  const sampleCache = new Map();
+  const sampleRelease = {grand: .24, piano: .19, bass: .13, pluck: .23, organ: .075, bell: .34};
+
+  function nearestRoot(voice, note) {
+    return Object.keys(instrumentSamples[voice]).map(Number).reduce((nearest, root) =>
+      Math.abs(root - note) < Math.abs(nearest - note) ? root : nearest);
+  }
+
+  function loadSample(voice, root) {
+    const key = voice + ':' + root;
+    if (!sampleCache.has(key)) {
+      const data = Uint8Array.from(atob(instrumentSamples[voice][root]), char => char.charCodeAt(0));
+      const decoded = context.decodeAudioData(data.buffer).then(buffer => {
+        const left = buffer.getChannelData(0);
+        const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : left;
+        let peak = .01;
+        for (let i = 0; i < buffer.length; i++) peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
+        return {left, right, rate: buffer.sampleRate, gain: Math.min(6, .56 / peak)};
+      }).catch(error => {
+        sampleCache.delete(key);
+        throw error;
+      });
+      sampleCache.set(key, decoded);
+    }
+    return sampleCache.get(key);
+  }
+
+  function warmVoice() {
+    if (mode !== 'melody') return;
+    const voice = $('voice').value;
+    const start = (octave + 1) * 12;
+    const roots = new Set([0, 4, 8, 11].map(semitone => nearestRoot(voice, start + semitone)));
+    Promise.all([...roots].map(root => loadSample(voice, root))).catch(() => {});
+  }
+
+  function mixSample(event, voice, sample, root, left, right, start, gate) {
+    const tuning = 2 ** ((event.row + event.pitch - root) / 12) * sample.rate / rate;
+    const release = Math.round(sampleRelease[voice] * rate);
+    const limit = Math.min(left.length - start, gate + release);
+    const loopStart = Math.floor(sample.rate * .34);
+    const loopEnd = Math.min(sample.left.length - 2, Math.floor(sample.rate * 1.04));
+    const crossfade = Math.min(Math.floor(sample.rate * .023), Math.floor((loopEnd - loopStart) / 3));
+    const loop = voice === 'organ' && crossfade > 1;
+    const interpolate = (channel, at) => {
+      const index = Math.floor(at);
+      return channel[index] + (channel[index + 1] - channel[index]) * (at - index);
+    };
+    const pan = (event.row % 7 - 3) * .035;
+    const velocity = event.step % 4 === 0 ? 1 : .92;
+    for (let i = 0; i < limit; i++) {
+      let at = i * tuning;
+      if (loop && at >= loopEnd) at = loopStart + crossfade + (at - loopEnd) % (loopEnd - loopStart - crossfade);
+      if (at >= sample.left.length - 1) break;
+      const blend = loop ? clamp((at - loopEnd + crossfade) / crossfade, 0, 1) : 0;
+      const crossAt = loopStart + (at - loopEnd + crossfade);
+      const read = channel => interpolate(channel, at) * (1 - blend) + (blend ? interpolate(channel, crossAt) * blend : 0);
+      const envelope = Math.min(1, i / (rate * .003)) * (1 - clamp((i - gate) / release, 0, 1)) ** 2;
+      const gain = envelope * sample.gain * velocity;
+      left[start + i] += read(sample.left) * gain * (1 - pan);
+      right[start + i] += read(sample.right) * gain * (1 + pan);
+    }
+  }
 
   function stepSeconds() {
     const input = $('tempo');
@@ -28,14 +89,12 @@
     return 60 / tempo / 4;
   }
 
-  function makeSampler(event, instrument) {
+  function makeDrumSampler(event) {
     let seed = (19 + event.row * 31 + event.step * 113) >>> 0;
     let previousNoise = 0;
     let coloredNoise = 0;
     const tuning = 2 ** (event.pitch / 12);
-    const hz = event.kind === 'melody' ? frequency(event.row + event.pitch) : 0;
     const velocity = event.step % 4 === 0 ? 1 : .9 + (seed % 11) / 100;
-    const partial = (ratio, time) => hz * ratio < rate * .47 ? sine(hz * ratio * time) : 0;
 
     return (time, duration) => {
       seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
@@ -43,92 +102,67 @@
       const high = (noise - previousNoise) * .65;
       previousNoise = noise;
       coloredNoise += .22 * (noise - coloredNoise);
-      const attack = instrument === 'organ' && hz ? .022 : .004;
-      const edge = Math.min(1, time / attack, (duration - time) / Math.min(.037, duration / 2));
+      const edge = Math.min(1, time / .004, (duration - time) / Math.min(.037, duration / 2));
       let sample;
-      if (event.kind === 'drums') {
-        const t = time * tuning;
-        switch (event.row) {
-          case 0: {
-            const phase = 46 * t + 3.8 * (1 - Math.exp(-t * 36));
-            sample = .74 * sine(phase) * Math.exp(-t * 13) + .16 * high * Math.exp(-t * 175);
-            break;
-          }
-          case 1:
-            sample = (.53 * high + .24 * noise) * Math.exp(-t * 27)
-              + (.23 * sine(178 * t) + .10 * sine(317 * t)) * Math.exp(-t * 46);
-            break;
-          case 2:
-            sample = (.27 * high + .10 * sine(6203 * t) * sine(8393 * t)) * Math.exp(-t * 44);
-            break;
-          case 3: {
-            const burst = [0, .011, .023, .035].reduce((sum, offset) =>
-              t >= offset ? sum + Math.exp(-(t - offset) * 103) : sum, 0);
-            sample = .21 * (high + .6 * coloredNoise) * (burst + .18 * Math.exp(-t * 15));
-            break;
-          }
-          case 4: {
-            const phase = 112 * t + 1.25 * (1 - Math.exp(-t * 24));
-            sample = (.48 * sine(phase) + .17 * sine(1.57 * phase) * Math.exp(-t * 12)) * Math.exp(-t * 10)
-              + .12 * coloredNoise * Math.exp(-t * 115);
-            break;
-          }
-          case 5:
-            sample = .43 * high * Math.sin(Math.PI * Math.min(1, t / .18)) ** 2;
-            break;
-          default:
-            sample = (.19 * high + .12 * sine(3697 * t) * sine(4591 * t) + .07 * sine(5119 * t)) * Math.exp(-t * 8);
+      const t = time * tuning;
+      switch (event.row) {
+        case 0: {
+          const phase = 46 * t + 3.8 * (1 - Math.exp(-t * 36));
+          sample = .74 * sine(phase) * Math.exp(-t * 13) + .16 * high * Math.exp(-t * 175);
+          break;
         }
-      } else {
-        const phase = hz * time;
-        const knock = coloredNoise * Math.exp(-time * 110);
-        switch (instrument) {
-          case 'piano': {
-            const tine = hz < rate * .1 ? sine(phase + .6 * partial(3.99, time) * Math.exp(-time * 13)) : partial(1, time);
-            sample = .23 * (tine * Math.exp(-time * 3) + .28 * partial(2.005, time) * Math.exp(-time * 9) + .16 * knock);
-            break;
-          }
-          case 'bass':
-            sample = .34 * (partial(1, time) + .26 * partial(2, time) * Math.exp(-time * 6)
-              + .15 * partial(3, time) * Math.exp(-time * 18) + .1 * knock) * Math.exp(-time * 2.9);
-            break;
-          case 'pluck':
-            sample = .26 * (partial(1, time) * Math.exp(-time * 7) + .68 * partial(2.003, time) * Math.exp(-time * 15)
-              + .45 * partial(3.012, time) * Math.exp(-time * 23) + .28 * partial(5.04, time) * Math.exp(-time * 42) + knock * .2);
-            break;
-          case 'organ':
-            sample = .19 * (partial(1, time) + .51 * partial(2, time) + .26 * partial(3, time) + .13 * partial(4, time))
-              * (.93 + .07 * sine(time * 5.4)) + .025 * knock;
-            break;
-          case 'bell':
-            sample = .25 * (partial(1, time) * Math.exp(-time * 3.5) + .45 * partial(2.76, time) * Math.exp(-time * 9)
-              + .27 * partial(5.43, time) * Math.exp(-time * 16) + .13 * partial(8.19, time) * Math.exp(-time * 22));
-            break;
-          default:
-            sample = .18 * (partial(1, time) + .34 * partial(1.003, time)
-              + .25 * partial(2, time) * Math.exp(-time * 4) + .1 * partial(3, time) * Math.exp(-time * 8));
+        case 1:
+          sample = (.53 * high + .24 * noise) * Math.exp(-t * 27)
+            + (.23 * sine(178 * t) + .10 * sine(317 * t)) * Math.exp(-t * 46);
+          break;
+        case 2:
+          sample = (.27 * high + .10 * sine(6203 * t) * sine(8393 * t)) * Math.exp(-t * 44);
+          break;
+        case 3: {
+          const burst = [0, .011, .023, .035].reduce((sum, offset) =>
+            t >= offset ? sum + Math.exp(-(t - offset) * 103) : sum, 0);
+          sample = .21 * (high + .6 * coloredNoise) * (burst + .18 * Math.exp(-t * 15));
+          break;
         }
+        case 4: {
+          const phase = 112 * t + 1.25 * (1 - Math.exp(-t * 24));
+          sample = (.48 * sine(phase) + .17 * sine(1.57 * phase) * Math.exp(-t * 12)) * Math.exp(-t * 10)
+            + .12 * coloredNoise * Math.exp(-t * 115);
+          break;
+        }
+        case 5:
+          sample = .43 * high * Math.sin(Math.PI * Math.min(1, t / .18)) ** 2;
+          break;
+        default:
+          sample = (.19 * high + .12 * sine(3697 * t) * sine(4591 * t) + .07 * sine(5119 * t)) * Math.exp(-t * 8);
       }
       return sample * edge * velocity;
     };
   }
 
-  function renderEvents(events, stepTime, fullPattern) {
+  async function renderEvents(events, stepTime, fullPattern, voice) {
     const tail = events.reduce((end, event) => Math.max(end, event.step + event.length), 0);
     const steps = fullPattern ? Math.ceil(tail / 4) * 4 : tail;
-    const frameCount = Math.max(1, Math.ceil(steps * stepTime * rate));
+    const isMelody = events[0]?.kind === 'melody';
+    const musicSeconds = isMelody ? Math.max(steps * stepTime, tail * stepTime + sampleRelease[voice]) : steps * stepTime;
+    const frameCount = Math.max(1, Math.ceil(musicSeconds * rate));
     // Avoid attempting a huge synchronous audio allocation from a mistyped step number.
     if (frameCount * 8 > 128 * 1024 * 1024) throw new RangeError('Pattern exceeds audio buffer budget');
+    const roots = isMelody ? events.map(event => nearestRoot(voice, event.row + event.pitch)) : [];
+    const samples = await Promise.all(roots.map(root => loadSample(voice, root)));
     const buffer = context.createBuffer(2, frameCount, rate);
     const left = buffer.getChannelData(0);
     const right = buffer.getChannelData(1);
-    const instrument = $('voice').value;
     const reflection = Math.round(.019 * rate);
-    for (const event of events) {
+    for (const [index, event] of events.entries()) {
       const start = Math.round(event.step * stepTime * rate);
       const length = Math.min(frameCount - start, Math.ceil(event.length * stepTime * rate));
-      const sample = makeSampler(event, instrument);
-      const pan = event.kind === 'melody' ? (event.row % 7 - 3) * .045 : [0, 0, .22, -.13, -.22, .33, -.32][event.row];
+      if (isMelody) {
+        mixSample(event, voice, samples[index], roots[index], left, right, start, length);
+        continue;
+      }
+      const sample = makeDrumSampler(event);
+      const pan = [0, 0, .22, -.13, -.22, .33, -.32][event.row];
       const volumeL = Math.sqrt(.5 - .5 * pan);
       const volumeR = Math.sqrt(.5 + .5 * pan);
       for (let i = 0; i < length; i++) {
@@ -162,10 +196,13 @@
 
   async function audition(event) {
     const request = previewRequest;
+    const note = {...event, step: 0, length: Math.min(event.length, 8)};
+    const voice = $('voice').value;
+    const stepTime = stepSeconds();
+    if (note.kind === 'melody') note.length = Math.max(note.length, .22 / stepTime);
     try {
-      await context.resume();
+      const [, buffer] = await Promise.all([context.resume(), renderEvents([note], stepTime, false, voice)]);
       if (request !== previewRequest) return;
-      const buffer = renderEvents([{...event, step: 0, length: Math.min(event.length, 8)}], stepSeconds(), false);
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(context.destination);
@@ -243,13 +280,22 @@
           refreshPads();
           audition(chosen);
         };
+        const remove = () => {
+          const event = events.get(key);
+          if (!event) return;
+          stopAudio();
+          events.delete(key);
+          if (chosen === event) chosen = undefined;
+          refreshPads();
+        };
+        pad.oncontextmenu = event => {
+          event.preventDefault();
+          remove();
+        };
         pad.onkeydown = event => {
-          if ((event.code === 'Delete' || event.code === 'Backspace') && events.has(key)) {
-            event.preventDefault();
-            events.delete(key);
-            chosen = undefined;
-            refreshPads();
-          }
+          if (event.code !== 'Delete' && event.code !== 'Backspace') return;
+          event.preventDefault();
+          remove();
         };
         grid.append(pad);
         if (key === focusKey) pad.focus({preventScroll: true});
@@ -271,6 +317,7 @@
   $('octave').onchange = () => {
     octave = clamp(Math.round($('octave').valueAsNumber || 0), -2, 9);
     drawPattern();
+    warmVoice();
   };
   $('eventPitch').onchange = () => {
     if (!chosen) return;
@@ -311,6 +358,7 @@
       mode = type;
       chosen = undefined;
       drawPattern();
+      warmVoice();
     };
   }
   $('patternClear').onclick = () => {
@@ -321,6 +369,7 @@
   };
   $('voice').onchange = () => {
     stopAudio();
+    warmVoice();
     if (chosen) audition(chosen);
   };
   $('tempo').onchange = () => { stopAudio(); stepSeconds(); };
@@ -330,10 +379,11 @@
     pause();
     const request = previewRequest;
     try {
-      await context.resume();
+      const events = [...patterns[mode].values()].map(event => ({...event}));
+      const [, buffer] = await Promise.all([context.resume(), renderEvents(events, stepSeconds(), true, $('voice').value)]);
       if (request !== previewRequest) return;
       const source = context.createBufferSource();
-      source.buffer = renderEvents([...patterns[mode].values()], stepSeconds(), true);
+      source.buffer = buffer;
       source.connect(context.destination);
       source.onended = () => {
         if (preview !== source) return;
@@ -343,18 +393,25 @@
       source.start();
       preview = source;
       updateControls();
-    } catch { say('Не удалось воспроизвести партию. Проверьте её длину.'); }
+    } catch { say('Не удалось воспроизвести партию. Проверьте длину и доступность сэмплов.'); }
   };
-  $('patternInsert').onclick = () => {
+  $('patternInsert').onclick = async () => {
     stopAudio();
     pause();
+    const request = previewRequest;
+    const at = position;
     try {
       const name = mode === 'drums' ? 'Бит' : $('voice').selectedOptions[0]?.textContent || 'Мелодия';
-      selected = addTrack(name, renderEvents([...patterns[mode].values()], stepSeconds(), true), position);
+      const events = [...patterns[mode].values()].map(event => ({...event}));
+      const buffer = await renderEvents(events, stepSeconds(), true, $('voice').value);
+      if (request !== previewRequest) return;
+      selected = addTrack(name, buffer, at);
       render();
       $('timeline').focus({preventScroll: true});
       say('На шкалу добавлен клип «' + name + '»');
-    } catch { say('Партия слишком длинная для одного аудиоклипа'); }
+    } catch (error) {
+      say(error instanceof RangeError ? 'Партия слишком длинная для одного аудиоклипа' : 'Не удалось подготовить сэмплы партии');
+    }
   };
   document.addEventListener('stop-pattern-preview', stopAudio);
   drawPattern();
