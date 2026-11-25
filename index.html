@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="Многодорожечный редактор музыки и звуковых эффектов">
-<!-- FluidR3 GM instrument samples by Frank Wen, CC BY 3.0 US. See SAMPLE-LICENSE.md. -->
-<title>MUSICINATE — аудиоредактор</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css?v=5"><script src="editor.js?v=5" defer></script><script src="samples.js?v=1" defer></script><script src="sequencer.js?v=7" defer></script>
+<!-- FluidR3 GM samples by Frank Wen. See SAMPLE-LICENSE.md for attribution and licenses. -->
+<title>MUSICINATE — аудиоредактор</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css?v=6"><script src="editor.js?v=5" defer></script><script src="samples.js?v=1" defer></script><script src="drum-samples.js?v=1" defer></script><script src="sequencer.js?v=8" defer></script>
 </head>
 <body>
 <header><div class="brand"><img src="icon.png" alt=""><div>MUSICINATE<small>АУДИОРЕДАКТОР</small></div></div><div class="project" id="project">Демо-проект <span> / </span> Ночной сигнал</div><button id="export" class="primary">↓ Экспорт WAV</button></header>
@@ -66,13 +66,11 @@
         </label>
         <label class="tempo">BPM <input id="tempo" type="number" min="1" max="220" value="120"></label>
       </div>
-      <div class="pattern-navigation">
-        <button id="priorSteps" aria-label="Предыдущие 16 шагов">‹</button>
-        <label>Первый шаг <input id="firstStep" type="number" value="1" min="1" step="1"></label>
-        <button id="nextSteps" aria-label="Следующие 16 шагов">›</button>
-        <label id="octaveLabel" hidden>Октава сетки <input id="octave" type="number" value="4" min="-2" max="9" step="1"></label>
+      <div class="pattern-summary">
+        <span id="patternLength">Длина, шагов: 0</span>
+        <span id="patternHelp">Время ← → · Высота ↑ ↓ · Shift + колесо для прокрутки по времени</span>
       </div>
-      <div id="patternScroll"><div id="patternGrid"></div></div>
+      <div id="patternScroll" tabindex="0" aria-label="Сетка секвенсора" aria-describedby="patternHelp"><div id="patternSpace"><div id="patternGrid"></div></div></div>
       <div id="eventControls" class="pattern-navigation" hidden>
         <strong id="eventName"></strong>
         <label>Сдвиг высоты, полутоны <input id="eventPitch" type="number" step="1"></label>

@@ -52,3 +52,10 @@ kbd{font:600 11px ui-monospace,monospace;color:#ded0f4;border:1px solid #4b4261;
 .clip-wrap.dragging{z-index:2}
 .clip-wrap.dragging .clip{cursor:grabbing}
 .lane.drop-target{box-shadow:inset 0 0 0 2px #63dec6;background-color:#63dec61a}
+
+.pattern-summary{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:12px;color:var(--dim);font-size:13px}
+#patternScroll{overflow:scroll;margin:8px 0 15px;overscroll-behavior:contain}
+#patternSpace{position:relative}
+#patternGrid{position:sticky;top:0;left:0;width:max-content;min-width:0;grid-template-rows:27px;grid-auto-rows:33px;gap:0;background:#181723}
+#patternGrid .step-pad{width:30px;height:28px;align-self:center;justify-self:center}
+#patternGrid .pattern-name{padding-left:5px}

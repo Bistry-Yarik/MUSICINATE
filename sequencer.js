@@ -1,25 +1,32 @@
 'use strict';
 
 {
-  const pageSize = 16;
+  const columnWidth = 34;
+  const rowHeight = 33;
+  const labelWidth = 84;
+  const headerHeight = 27;
+  const minimumColumns = 32;
+  const viewRows = 12;
   const drums = ['Бочка', 'Малый', 'Хай-хэт', 'Хлопок', 'Том', 'Шейкер', 'Тарелка'];
   const pitches = ['До', 'До♯', 'Ре', 'Ре♯', 'Ми', 'Фа', 'Фа♯', 'Соль', 'Соль♯', 'Ля', 'Ля♯', 'Си'];
   const patterns = {drums: new Map(), melody: new Map()};
-  const pages = {drums: 0, melody: 0};
+  const views = {
+    drums: {left: 0, top: 0, width: minimumColumns},
+    melody: {left: 0, top: 0, width: minimumColumns}
+  };
   const auditioning = new Set();
   const lowestNote = -12;
   const highestNote = 131;
   let mode = 'drums';
-  let octave = 4;
+  views.melody.top = (highestNote - 71) * rowHeight;
   let chosen, preview, previewRequest = 0;
   let visiblePads = [];
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const cellKey = (row, step) => row + ':' + step;
   const noteName = note => pitches[((note % 12) + 12) % 12] + ' ' + (Math.floor(note / 12) - 1);
-  const sine = phase => Math.sin(2 * Math.PI * phase);
   const sampleCache = new Map();
-  const sampleRelease = {grand: .24, piano: .19, bass: .13, pluck: .23, organ: .075, bell: .34};
+  const sampleRelease = {drums: .16, grand: .24, piano: .19, bass: .13, pluck: .23, organ: .075, bell: .34};
 
   function nearestRoot(voice, note) {
     return Object.keys(instrumentSamples[voice]).map(Number).reduce((nearest, root) =>
@@ -29,7 +36,8 @@
   function loadSample(voice, root) {
     const key = voice + ':' + root;
     if (!sampleCache.has(key)) {
-      const data = Uint8Array.from(atob(instrumentSamples[voice][root]), char => char.charCodeAt(0));
+      const encoded = voice === 'drums' ? drumSamples[root] : instrumentSamples[voice][root];
+      const data = Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
       const decoded = context.decodeAudioData(data.buffer).then(buffer => {
         const left = buffer.getChannelData(0);
         const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : left;
@@ -46,15 +54,19 @@
   }
 
   function warmVoice() {
-    if (mode !== 'melody') return;
+    if (mode === 'drums') {
+      Promise.all(drums.map((_, root) => loadSample('drums', root))).catch(() => {});
+      return;
+    }
     const voice = $('voice').value;
-    const start = (octave + 1) * 12;
+    const start = Math.max(lowestNote, highestNote - Math.floor(views.melody.top / rowHeight) - viewRows + 1);
     const roots = new Set([0, 4, 8, 11].map(semitone => nearestRoot(voice, start + semitone)));
     Promise.all([...roots].map(root => loadSample(voice, root))).catch(() => {});
   }
 
   function mixSample(event, voice, sample, root, left, right, start, gate) {
-    const tuning = 2 ** ((event.row + event.pitch - root) / 12) * sample.rate / rate;
+    const semitones = event.kind === 'drums' ? event.pitch : event.row + event.pitch - root;
+    const tuning = 2 ** (semitones / 12) * sample.rate / rate;
     const release = Math.round(sampleRelease[voice] * rate);
     const limit = Math.min(left.length - start, gate + release);
     const loopStart = Math.floor(sample.rate * .34);
@@ -65,7 +77,9 @@
       const index = Math.floor(at);
       return channel[index] + (channel[index + 1] - channel[index]) * (at - index);
     };
-    const pan = (event.row % 7 - 3) * .035;
+    const pan = event.kind === 'drums'
+      ? [0, 0, .22, -.13, -.22, .33, -.32][event.row]
+      : (event.row % 7 - 3) * .035;
     const velocity = event.step % 4 === 0 ? 1 : .92;
     for (let i = 0; i < limit; i++) {
       let at = i * tuning;
@@ -74,7 +88,8 @@
       const blend = loop ? clamp((at - loopEnd + crossfade) / crossfade, 0, 1) : 0;
       const crossAt = loopStart + (at - loopEnd + crossfade);
       const read = channel => interpolate(channel, at) * (1 - blend) + (blend ? interpolate(channel, crossAt) * blend : 0);
-      const envelope = Math.min(1, i / (rate * .003)) * (1 - clamp((i - gate) / release, 0, 1)) ** 2;
+      const edge = Math.min(1, i / (rate * .002), (left.length - start - i - 1) / (rate * .006));
+      const envelope = edge * (1 - clamp((i - gate) / release, 0, 1)) ** 2;
       const gain = envelope * sample.gain * velocity;
       left[start + i] += read(sample.left) * gain * (1 - pan);
       right[start + i] += read(sample.right) * gain * (1 + pan);
@@ -89,88 +104,24 @@
     return 60 / tempo / 4;
   }
 
-  function makeDrumSampler(event) {
-    let seed = (19 + event.row * 31 + event.step * 113) >>> 0;
-    let previousNoise = 0;
-    let coloredNoise = 0;
-    const tuning = 2 ** (event.pitch / 12);
-    const velocity = event.step % 4 === 0 ? 1 : .9 + (seed % 11) / 100;
-
-    return (time, duration) => {
-      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-      const noise = seed / 2147483648 - 1;
-      const high = (noise - previousNoise) * .65;
-      previousNoise = noise;
-      coloredNoise += .22 * (noise - coloredNoise);
-      const edge = Math.min(1, time / .004, (duration - time) / Math.min(.037, duration / 2));
-      let sample;
-      const t = time * tuning;
-      switch (event.row) {
-        case 0: {
-          const phase = 46 * t + 3.8 * (1 - Math.exp(-t * 36));
-          sample = .74 * sine(phase) * Math.exp(-t * 13) + .16 * high * Math.exp(-t * 175);
-          break;
-        }
-        case 1:
-          sample = (.53 * high + .24 * noise) * Math.exp(-t * 27)
-            + (.23 * sine(178 * t) + .10 * sine(317 * t)) * Math.exp(-t * 46);
-          break;
-        case 2:
-          sample = (.27 * high + .10 * sine(6203 * t) * sine(8393 * t)) * Math.exp(-t * 44);
-          break;
-        case 3: {
-          const burst = [0, .011, .023, .035].reduce((sum, offset) =>
-            t >= offset ? sum + Math.exp(-(t - offset) * 103) : sum, 0);
-          sample = .21 * (high + .6 * coloredNoise) * (burst + .18 * Math.exp(-t * 15));
-          break;
-        }
-        case 4: {
-          const phase = 112 * t + 1.25 * (1 - Math.exp(-t * 24));
-          sample = (.48 * sine(phase) + .17 * sine(1.57 * phase) * Math.exp(-t * 12)) * Math.exp(-t * 10)
-            + .12 * coloredNoise * Math.exp(-t * 115);
-          break;
-        }
-        case 5:
-          sample = .43 * high * Math.sin(Math.PI * Math.min(1, t / .18)) ** 2;
-          break;
-        default:
-          sample = (.19 * high + .12 * sine(3697 * t) * sine(4591 * t) + .07 * sine(5119 * t)) * Math.exp(-t * 8);
-      }
-      return sample * edge * velocity;
-    };
-  }
+  const patternLength = events => events.reduce((end, event) => Math.max(end, event.step + event.length), 0);
 
   async function renderEvents(events, stepTime, fullPattern, voice) {
-    const tail = events.reduce((end, event) => Math.max(end, event.step + event.length), 0);
-    const steps = fullPattern ? Math.ceil(tail / 4) * 4 : tail;
-    const isMelody = events[0]?.kind === 'melody';
-    const musicSeconds = isMelody ? Math.max(steps * stepTime, tail * stepTime + sampleRelease[voice]) : steps * stepTime;
-    const frameCount = Math.max(1, Math.ceil(musicSeconds * rate));
-    // Avoid attempting a huge synchronous audio allocation from a mistyped step number.
+    const instrument = events[0]?.kind === 'drums' ? 'drums' : voice;
+    const tail = patternLength(events) * stepTime;
+    const musicSeconds = fullPattern ? tail : tail + sampleRelease[instrument];
+    const frameCount = Math.max(1, Math.ceil(musicSeconds * rate - 1e-8));
+    // Avoid attempting a huge synchronous audio allocation from a mistyped duration.
     if (frameCount * 8 > 128 * 1024 * 1024) throw new RangeError('Pattern exceeds audio buffer budget');
-    const roots = isMelody ? events.map(event => nearestRoot(voice, event.row + event.pitch)) : [];
-    const samples = await Promise.all(roots.map(root => loadSample(voice, root)));
+    const roots = events.map(event => instrument === 'drums' ? event.row : nearestRoot(instrument, event.row + event.pitch));
+    const samples = await Promise.all(roots.map(root => loadSample(instrument, root)));
     const buffer = context.createBuffer(2, frameCount, rate);
     const left = buffer.getChannelData(0);
     const right = buffer.getChannelData(1);
-    const reflection = Math.round(.019 * rate);
     for (const [index, event] of events.entries()) {
       const start = Math.round(event.step * stepTime * rate);
       const length = Math.min(frameCount - start, Math.ceil(event.length * stepTime * rate));
-      if (isMelody) {
-        mixSample(event, voice, samples[index], roots[index], left, right, start, length);
-        continue;
-      }
-      const sample = makeDrumSampler(event);
-      const pan = [0, 0, .22, -.13, -.22, .33, -.32][event.row];
-      const volumeL = Math.sqrt(.5 - .5 * pan);
-      const volumeR = Math.sqrt(.5 + .5 * pan);
-      for (let i = 0; i < length; i++) {
-        const value = sample(i / rate, length / rate);
-        left[start + i] += value * volumeL;
-        right[start + i] += value * volumeR;
-        if (i + reflection < length) right[start + i + reflection] += value * .062;
-      }
+      if (length > 0) mixSample(event, instrument, samples[index], roots[index], left, right, start, length);
     }
     let peak = .96;
     for (let frame = 0; frame < frameCount; frame++) peak = Math.max(peak, Math.abs(left[frame]), Math.abs(right[frame]));
@@ -199,7 +150,7 @@
     const note = {...event, step: 0, length: Math.min(event.length, 8)};
     const voice = $('voice').value;
     const stepTime = stepSeconds();
-    if (note.kind === 'melody') note.length = Math.max(note.length, .22 / stepTime);
+    note.length = Math.max(note.length, (note.kind === 'drums' ? .36 : .22) / stepTime);
     try {
       const [, buffer] = await Promise.all([context.resume(), renderEvents([note], stepTime, false, voice)]);
       if (request !== previewRequest) return;
@@ -214,6 +165,11 @@
 
   function updateControls() {
     const hasEvents = patterns[mode].size > 0;
+    const steps = patternLength([...patterns[mode].values()]);
+    $('patternLength').textContent = 'Длина, шагов: ' + Number(steps.toFixed(3));
+    const view = views[mode];
+    view.width = Math.max(view.width, Math.ceil(steps) + 16);
+    syncExtent();
     $('patternClear').disabled = !hasEvents;
     $('patternInsert').disabled = !hasEvents;
     $('patternPreview').disabled = !hasEvents && !preview;
@@ -247,27 +203,52 @@
     updateControls();
   }
 
+  const scroll = $('patternScroll');
+  let renderedView = '';
+  const visibleColumns = () => Math.max(1, Math.floor(((scroll.clientWidth || 628) - labelWidth) / columnWidth));
+  const visiblePitchOffset = top => clamp(Math.round(top / rowHeight), 0, highestNote - lowestNote - viewRows + 1);
+
+  function syncExtent() {
+    const view = views[mode];
+    const isMelody = mode === 'melody';
+    $('patternSpace').style.width = labelWidth + view.width * columnWidth + 'px';
+    $('patternSpace').style.height = headerHeight + (isMelody ? highestNote - lowestNote + 1 : drums.length) * rowHeight + 'px';
+    scroll.style.height = headerHeight + (isMelody ? viewRows : drums.length) * rowHeight + 16 + 'px';
+  }
+
+  function showView() {
+    syncExtent();
+    scroll.scrollLeft = views[mode].left;
+    scroll.scrollTop = views[mode].top;
+    renderedView = '';
+    drawPattern();
+    warmVoice();
+  }
+
   function drawPattern(focusKey) {
     const grid = $('patternGrid');
-    const offset = pages[mode];
+    const view = views[mode];
+    const offset = Math.floor(view.left / columnWidth);
     const isMelody = mode === 'melody';
-    const octaveStart = (octave + 1) * 12;
-    const rows = isMelody ? pitches.map((_, i) => octaveStart + 11 - i) : drums.map((_, i) => i);
+    const lowOffset = visiblePitchOffset(view.top);
+    const columns = visibleColumns();
+    const rows = isMelody
+      ? Array.from({length: viewRows}, (_, i) => highestNote - lowOffset - i).filter(row => row >= lowestNote)
+      : drums.map((_, i) => i);
     const events = patterns[mode];
     grid.dataset.mode = mode;
+    grid.style.gridTemplateColumns = labelWidth + 'px repeat(' + columns + ', ' + columnWidth + 'px)';
     grid.replaceChildren(make('span'));
     visiblePads = [];
-    $('voiceLabel').hidden = $('octaveLabel').hidden = !isMelody;
-    $('firstStep').value = offset + 1;
-    $('octave').value = octave;
-    $('priorSteps').disabled = offset === 0;
-    for (let column = 0; column < pageSize; column++) {
+    $('voiceLabel').hidden = !isMelody;
+    renderedView = [mode, offset, lowOffset, columns].join(':');
+    for (let column = 0; column < columns; column++) {
       grid.append(make('span', 'step-number', String(offset + column + 1)));
     }
     for (const row of rows) {
       const label = isMelody ? noteName(row) : drums[row];
       grid.append(make('span', 'pattern-name', label));
-      for (let column = 0; column < pageSize; column++) {
+      for (let column = 0; column < columns; column++) {
         const step = offset + column;
         const key = cellKey(row, step);
         const pad = make('button', 'step-pad');
@@ -306,19 +287,46 @@
     refreshPads();
   }
 
-  function jump(step) {
-    pages[mode] = Math.max(0, Math.min(Number.MAX_SAFE_INTEGER - pageSize, Math.round(step)));
-    drawPattern();
+  function onScroll() {
+    const view = views[mode];
+    view.left = scroll.scrollLeft;
+    view.top = scroll.scrollTop;
+    const columns = visibleColumns();
+    const offset = Math.floor(view.left / columnWidth);
+    const row = visiblePitchOffset(view.top);
+    if (offset + columns + 4 >= view.width) {
+      view.width = offset + columns + 16;
+      syncExtent();
+    }
+    if (renderedView !== [mode, offset, row, columns].join(':')) drawPattern();
   }
 
-  $('priorSteps').onclick = () => jump(pages[mode] - pageSize);
-  $('nextSteps').onclick = () => jump(pages[mode] + pageSize);
-  $('firstStep').onchange = () => jump(($('firstStep').valueAsNumber || 1) - 1);
-  $('octave').onchange = () => {
-    octave = clamp(Math.round($('octave').valueAsNumber || 0), -2, 9);
-    drawPattern();
-    warmVoice();
-  };
+  scroll.addEventListener('scroll', () => { if (scroll.clientWidth) onScroll(); });
+  scroll.addEventListener('wheel', event => {
+    if (event.shiftKey && event.deltaY && !event.deltaX) {
+      event.preventDefault();
+      const scale = event.deltaMode === 1 ? columnWidth : 1;
+      scroll.scrollLeft += event.deltaY * scale;
+    }
+  }, {passive: false});
+  scroll.addEventListener('keydown', event => {
+    const movements = {
+      ArrowLeft: [-columnWidth, 0], ArrowRight: [columnWidth, 0],
+      ArrowUp: [0, -rowHeight], ArrowDown: [0, rowHeight]
+    };
+    const shift = movements[event.key];
+    if (!shift) return;
+    event.preventDefault();
+    scroll.focus({preventScroll: true});
+    scroll.scrollLeft += shift[0];
+    scroll.scrollTop += shift[1];
+  });
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => {
+      if (scroll.clientWidth) onScroll();
+    }).observe(scroll);
+  }
+
   $('eventPitch').onchange = () => {
     if (!chosen) return;
     const input = $('eventPitch');
@@ -349,7 +357,10 @@
     $('sequencer').hidden = !open;
     $('sequencerToggle').setAttribute('aria-expanded', open);
     if (!open) stopAudio();
-    else $('sequencer').scrollIntoView({block: 'nearest'});
+    else {
+      showView();
+      $('sequencer').scrollIntoView({block: 'nearest'});
+    }
   };
   for (const [id, type] of [['drumsTab', 'drums'], ['melodyTab', 'melody']]) {
     $(id).onclick = () => {
@@ -357,8 +368,7 @@
       stopAudio();
       mode = type;
       chosen = undefined;
-      drawPattern();
-      warmVoice();
+      showView();
     };
   }
   $('patternClear').onclick = () => {
@@ -414,5 +424,5 @@
     }
   };
   document.addEventListener('stop-pattern-preview', stopAudio);
-  drawPattern();
+  showView();
 }
